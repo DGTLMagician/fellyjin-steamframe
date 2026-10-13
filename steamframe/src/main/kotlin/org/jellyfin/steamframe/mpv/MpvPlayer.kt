@@ -1,14 +1,39 @@
 package org.jellyfin.steamframe.mpv
 
 import com.sun.jna.CallbackReference
+import com.sun.jna.Library
 import com.sun.jna.Memory
 import com.sun.jna.Native
+import com.sun.jna.Platform
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.PointerByReference
 import org.slf4j.LoggerFactory
 import java.lang.ref.Reference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+
+/**
+ * libmpv refuses to start (mpv_create returns NULL) unless LC_NUMERIC is "C", because it parses numbers with the C
+ * library. The JVM adopts the system locale at startup, so on e.g. a Dutch system LC_NUMERIC is nl_NL with a decimal
+ * comma. Java's own formatting does not use the C locale, so switching it is safe.
+ */
+internal object CLocale {
+	private interface LibC : Library {
+		fun setlocale(category: Int, locale: String?): String?
+	}
+
+	private val libc by lazy { Native.load("c", LibC::class.java) }
+
+	// LC_NUMERIC is 1 in glibc and 4 on macOS
+	private val lcNumeric = if (Platform.isMac()) 4 else 1
+
+	fun numeric(): String? = libc.setlocale(lcNumeric, null)
+
+	@Synchronized
+	fun ensureNumericC() {
+		if (numeric() != "C") libc.setlocale(lcNumeric, "C")
+	}
+}
 
 sealed interface MpvEvent {
 	/** An event this app does not handle. */
@@ -29,7 +54,10 @@ enum class EndReason { EOF, STOP, QUIT, ERROR, OTHER }
 class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	private val logger = LoggerFactory.getLogger(MpvPlayer::class.java)
 	private val mpv = LibMpv.instance
-	private val handle: Pointer = mpv.mpv_create() ?: error("mpv_create failed")
+	private val handle: Pointer = run {
+		CLocale.ensureNumericC()
+		mpv.mpv_create() ?: error("mpv_create failed (LC_NUMERIC is ${CLocale.numeric()})")
+	}
 
 	private var renderContext: Pointer? = null
 	// Kept as a field so the JNA callback is not garbage collected while mpv may call it

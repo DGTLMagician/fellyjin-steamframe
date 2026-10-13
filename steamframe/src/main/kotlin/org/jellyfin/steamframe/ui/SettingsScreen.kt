@@ -91,8 +91,9 @@ fun SettingsScreen(
 				configStore.update { it.copy(cinema = it.cinema.copy(verticalOffsetMeters = value)) }
 			}
 			Text(
-				"Controller: trigger or A plays/pauses, stick left/right seeks, stick up/down moves the screen, " +
-					"stick click recenters, left A/X cycles subtitles, left B/Y cycles audio, B or Menu stops.",
+				"Steam Frame controller: A or trigger plays/pauses, B or View stops, Menu shows progress, " +
+					"D-pad/stick left/right seeks, up/down moves the screen, bumpers skip chapters, " +
+					"X cycles subtitles, Y cycles audio, stick click recenters.",
 				style = MaterialTheme.typography.bodyLarge,
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 			)

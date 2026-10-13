@@ -75,22 +75,26 @@ Screen presets (Settings → VR cinema):
 
 ### Controller
 
-| Input                     | Action                          |
-|---------------------------|---------------------------------|
-| Trigger / right A         | Play / pause (shows seek bar)   |
-| Stick left / right        | Seek 10 s (60 s when held)      |
-| Stick up / down           | Move the screen closer / further |
-| Stick click               | Recenter the screen             |
-| Left A (X)                | Next subtitle track             |
-| Left B (Y)                | Next audio track                |
-| Right B / Menu            | Stop and return to the library  |
+In VR the app uses the native Steam Frame profile (`XR_VALVE_frame_controller_interaction`,
+`/interaction_profiles/valve/frame_controller_valve`) with the default layout:
 
-Suggested bindings are included for the Index, Touch and simple controller profiles. SteamVR remaps them for other
-controllers, and you can change them in SteamVR's controller binding settings.
+| Steam Frame controller        | Action                              |
+|-------------------------------|-------------------------------------|
+| A / trigger                   | Play / pause (shows the seek bar)   |
+| B / View                      | Stop and return to the library      |
+| Menu                          | Show progress                       |
+| D-pad ← → / stick left, right | Seek back 10 s / forward 30 s (stick repeats, 60 s when held) |
+| D-pad ↑ ↓ / stick up, down    | Move the screen closer / further    |
+| Bumpers                       | Previous / next chapter             |
+| X / Y                         | Next subtitle / audio track         |
+| Stick click                   | Recenter the screen                 |
 
-The library UI is a normal window, which SteamOS shows on its virtual screen. Navigate it with the controller laser
-pointer, or with the d-pad (arrow keys) and A/B (Enter/Escape) through Steam Input's desktop layout. For login, use
-Quick Connect so you don't have to type a password in VR.
+Bindings for Index, Touch and the simple controller are included too, and SteamVR's binding UI can remap everything.
+
+The library UI is a normal window on SteamOS' virtual screen. The default Steam Frame controls reach it as a
+gamepad, which the app reads through SDL2 (bundled with libmpv): D-pad or left stick move the focus, A selects and
+B goes back. The laser pointer works as a mouse. For login, use Quick Connect so you don't have to type a password
+in VR.
 
 ## Building
 

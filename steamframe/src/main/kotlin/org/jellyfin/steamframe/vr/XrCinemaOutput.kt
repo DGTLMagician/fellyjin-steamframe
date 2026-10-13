@@ -127,6 +127,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	private var exitRequested = false
 
 	private var supportsRefreshRate = false
+	private var supportsFrameController = false
 
 	// Video swapchain
 	private var video: XrSwapchainImages? = null
@@ -163,6 +164,13 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		CYCLE_SUBTITLES("cycle_subtitles", "Next subtitle track"),
 		CYCLE_AUDIO("cycle_audio", "Next audio track"),
 		RECENTER("recenter", "Recenter screen"),
+		INFO("info", "Show progress"),
+		SEEK_BACK("seek_back", "Rewind 10 seconds"),
+		SEEK_FORWARD("seek_forward", "Forward 30 seconds"),
+		SCREEN_CLOSER("screen_closer", "Move screen closer"),
+		SCREEN_FURTHER("screen_further", "Move screen further away"),
+		PREVIOUS_CHAPTER("previous_chapter", "Previous chapter"),
+		NEXT_CHAPTER("next_chapter", "Next chapter"),
 	}
 
 	init {
@@ -206,11 +214,14 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		}
 		supportsCylinder = KHRCompositionLayerCylinder.XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME in extensions
 		supportsRefreshRate = FBDisplayRefreshRate.XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME in extensions
+		supportsFrameController = FRAME_CONTROLLER_EXTENSION in extensions
+		logger.info("OpenXR extensions: cylinder=$supportsCylinder refreshRate=$supportsRefreshRate frameController=$supportsFrameController")
 
 		val enabledExtensions = buildList {
 			add(KHROpenGLEnable.XR_KHR_OPENGL_ENABLE_EXTENSION_NAME)
 			if (supportsCylinder) add(KHRCompositionLayerCylinder.XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME)
 			if (supportsRefreshRate) add(FBDisplayRefreshRate.XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)
+			if (supportsFrameController) add(FRAME_CONTROLLER_EXTENSION)
 		}
 		val extensionNames = stack.mallocPointer(enabledExtensions.size)
 		enabledExtensions.forEach { extensionNames.put(stack.UTF8(it)) }
@@ -385,14 +396,38 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 		val left = "/user/hand/left/input"
 		val right = "/user/hand/right/input"
-		val profiles = mapOf(
-			"/interaction_profiles/khr/simple_controller" to listOf(
+		val profiles = buildMap {
+			// Native Steam Frame controllers: right hand A/B/X/Y + Menu, left hand D-pad + View, bumpers on both
+			if (supportsFrameController) put(
+				FRAME_CONTROLLER_PROFILE,
+				listOf(
+					CinemaAction.PLAY_PAUSE to "$right/a/click",
+					CinemaAction.PLAY_PAUSE to "$right/trigger/click",
+					CinemaAction.PLAY_PAUSE to "$left/trigger/click",
+					CinemaAction.EXIT to "$right/b/click",
+					CinemaAction.EXIT to "$left/view/click",
+					CinemaAction.CYCLE_SUBTITLES to "$right/x/click",
+					CinemaAction.CYCLE_AUDIO to "$right/y/click",
+					CinemaAction.INFO to "$right/menu/click",
+					CinemaAction.RECENTER to "$left/thumbstick/click",
+					CinemaAction.RECENTER to "$right/thumbstick/click",
+					CinemaAction.SEEK_BACK to "$left/dpad_left/click",
+					CinemaAction.SEEK_FORWARD to "$left/dpad_right/click",
+					CinemaAction.SCREEN_CLOSER to "$left/dpad_up/click",
+					CinemaAction.SCREEN_FURTHER to "$left/dpad_down/click",
+					CinemaAction.PREVIOUS_CHAPTER to "$left/bumper/click",
+					CinemaAction.NEXT_CHAPTER to "$right/bumper/click",
+					null to "$left/thumbstick",
+					null to "$right/thumbstick",
+				),
+			)
+			put("/interaction_profiles/khr/simple_controller", listOf(
 				CinemaAction.PLAY_PAUSE to "$left/select/click",
 				CinemaAction.PLAY_PAUSE to "$right/select/click",
 				CinemaAction.EXIT to "$left/menu/click",
 				CinemaAction.EXIT to "$right/menu/click",
-			),
-			"/interaction_profiles/valve/index_controller" to listOf(
+			))
+			put("/interaction_profiles/valve/index_controller", listOf(
 				CinemaAction.PLAY_PAUSE to "$right/a/click",
 				CinemaAction.PLAY_PAUSE to "$right/trigger/click",
 				CinemaAction.PLAY_PAUSE to "$left/trigger/click",
@@ -403,8 +438,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				CinemaAction.RECENTER to "$right/thumbstick/click",
 				null to "$left/thumbstick",
 				null to "$right/thumbstick",
-			),
-			"/interaction_profiles/oculus/touch_controller" to listOf(
+			))
+			put("/interaction_profiles/oculus/touch_controller", listOf(
 				CinemaAction.PLAY_PAUSE to "$right/a/click",
 				CinemaAction.PLAY_PAUSE to "$right/trigger/value",
 				CinemaAction.PLAY_PAUSE to "$left/trigger/value",
@@ -416,8 +451,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				CinemaAction.RECENTER to "$right/thumbstick/click",
 				null to "$left/thumbstick",
 				null to "$right/thumbstick",
-			),
-		)
+			))
+		}
 
 		for ((profile, bindings) in profiles) {
 			val suggested = XrActionSuggestedBinding.calloc(bindings.size, stack)
@@ -789,6 +824,13 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		if (pressed(CinemaAction.CYCLE_SUBTITLES)) player.commandString("osd-msg cycle sub")
 		if (pressed(CinemaAction.CYCLE_AUDIO)) player.commandString("osd-msg cycle audio")
 		if (pressed(CinemaAction.RECENTER)) recenterPending = true
+		if (pressed(CinemaAction.INFO)) player.commandString("show-progress")
+		if (pressed(CinemaAction.SEEK_BACK)) player.commandString("osd-msg-bar seek -10")
+		if (pressed(CinemaAction.SEEK_FORWARD)) player.commandString("osd-msg-bar seek 30")
+		if (pressed(CinemaAction.SCREEN_CLOSER)) distance = (distance * 0.9f).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
+		if (pressed(CinemaAction.SCREEN_FURTHER)) distance = (distance / 0.9f).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
+		if (pressed(CinemaAction.PREVIOUS_CHAPTER)) player.commandString("osd-msg-bar add chapter -1")
+		if (pressed(CinemaAction.NEXT_CHAPTER)) player.commandString("osd-msg-bar add chapter 1")
 
 		val stick = stickAction ?: return
 		val stickState = XrActionStateVector2f.calloc(stack).`type$Default`()
@@ -892,6 +934,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	private companion object {
 		const val MAX_TEXTURE_SIZE = 4096
+		const val FRAME_CONTROLLER_EXTENSION = "XR_VALVE_frame_controller_interaction"
+		const val FRAME_CONTROLLER_PROFILE = "/interaction_profiles/valve/frame_controller_valve"
 		const val MIN_DISTANCE = 1.5f
 		const val MAX_DISTANCE = 60f
 		val MAX_CENTRAL_ANGLE = (PI * 0.95).toFloat()

@@ -220,8 +220,9 @@ private fun PlaybackOverlay(state: PlaybackState, deps: AppDependencies) {
 			Text(
 				if (state.output == "VR cinema" && vr) {
 					"Watching on the cinema screen in your headset.\n" +
-						"Trigger / A: play or pause · Stick left/right: seek · Stick up/down: screen distance\n" +
-						"Stick click: recenter · B / Menu: stop"
+						"A / trigger: play or pause · B / View: stop · Menu: progress\n" +
+						"D-pad or stick ←→: seek · D-pad or stick ↑↓: screen distance · Bumpers: chapters\n" +
+						"X: subtitles · Y: audio track · Stick click: recenter"
 				} else {
 					"Playing in a separate window. Press Escape or Q to stop."
 				},

@@ -44,7 +44,10 @@ jobs:
       - name: Bundle libmpv
         run: steamframe/packaging/bundle-libmpv.sh
       - name: Run tests
-        run: xvfb-run -a ./gradlew -p steamframe test
+        # A locale with a decimal comma catches regressions of libmpv's LC_NUMERIC requirement
+        run: |
+          sudo locale-gen nl_NL.UTF-8
+          LC_ALL=nl_NL.UTF-8 xvfb-run -a ./gradlew -p steamframe test
       - name: Package
         run: ./gradlew -p steamframe packageTarball
       - name: Upload artifacts

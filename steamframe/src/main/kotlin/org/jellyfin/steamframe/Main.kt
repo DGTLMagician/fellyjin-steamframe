@@ -1,5 +1,6 @@
 package org.jellyfin.steamframe
 
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -13,6 +14,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import org.jellyfin.steamframe.data.ConfigStore
 import org.jellyfin.steamframe.data.JellyfinRepository
+import org.jellyfin.steamframe.input.GamepadInput
 import org.jellyfin.steamframe.playback.PlaybackController
 import org.jellyfin.steamframe.ui.App
 import org.jellyfin.steamframe.ui.AppDependencies
@@ -67,6 +69,11 @@ fun main() {
 				}
 			},
 		) {
+			// The default Steam Frame controls arrive as a gamepad, translate them for the UI
+			DisposableEffect(Unit) {
+				val gamepad = GamepadInput(window).also { it.start() }
+				onDispose { gamepad.close() }
+			}
 			App(deps, initialScreen)
 		}
 	}
