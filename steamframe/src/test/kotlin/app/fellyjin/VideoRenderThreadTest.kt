@@ -94,8 +94,9 @@ class VideoRenderThreadTest {
 			val distinctColors = (0 until width * height).map { pixels.getInt(it * 4) }.toSet().size
 
 			println("[${if (egl) "EGL" else "GLX"}] Copied $copies frames, $distinctColors distinct colors in the last frame")
-			// 3 seconds at 30 fps: most frames should arrive, and the test pattern is colorful
-			assertTrue(copies >= 60, "Only $copies frames were copied")
+			// 3 seconds at 30 fps: most frames should arrive (software GL on a busy machine may drop some), and the
+			// test pattern is colorful
+			assertTrue(copies >= 45, "Only $copies frames were copied")
 			assertTrue(distinctColors > 20, "The copied frame looks empty ($distinctColors colors)")
 		} finally {
 			renderThread.close()

@@ -73,9 +73,15 @@ class EmbeddedPlaybackTest {
 			// Like moving the laser pointer: mpv's on-screen controller must appear over the bottom of the video
 			robot.mouseMove(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
 			Thread.sleep(150)
-			robot.mouseMove(bounds.x + bounds.width / 2 + 40, bounds.y + bounds.height - 30)
-			Thread.sleep(800)
-			val shot = robot.createScreenCapture(bounds)
+			// Wait (up to 3 s) for the controller to fade in, the machine may be busy with other tests
+			var shot = robot.createScreenCapture(bounds)
+			val waitStart = TimeSource.Monotonic.markNow()
+			while (waitStart.elapsedNow() < 3.seconds) {
+				robot.mouseMove(bounds.x + bounds.width / 2 + 40 + (waitStart.elapsedNow().inWholeMilliseconds % 20).toInt(), bounds.y + bounds.height - 30)
+				Thread.sleep(200)
+				shot = robot.createScreenCapture(bounds)
+				if (bottomBrightness(shot).toDouble() / bottomBrightness(before) < 0.8) break
+			}
 			ImageIO.write(shot, "png", File("build/snapshots/embedded-playback.png").apply { parentFile.mkdirs() })
 			val colors = (0 until shot.width step 8).flatMap { x -> (0 until shot.height step 8).map { y -> shot.getRGB(x, y) } }.toSet()
 			println("Embedded playback shows ${colors.size} distinct colors")

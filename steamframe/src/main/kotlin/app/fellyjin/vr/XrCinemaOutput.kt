@@ -148,6 +148,14 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	// Theater environment
 	private var theater: TheaterRenderer? = null
+
+	/** Curved screen drawn by the app, when the runtime has no cylinder layers (SteamVR on the Steam Frame). */
+	private var screen: ScreenRenderer? = null
+	private var screenWidthPx = 0
+	private var screenHeightPx = 0
+
+	/** True once the first video frame is on screen, through either path. */
+	private val hasVideo: Boolean get() = video?.hasContent == true || screen?.hasContent == true
 	private var videoThread: VideoRenderThread? = null
 	private var pendingOsd: String? = null
 	private val room = RoomState()
@@ -323,6 +331,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		createSpaces(stack)
 		createActions(stack, instance)
 		createTheater(instance)
+		createScreen(instance)
 	}
 
 	private fun createTheater(instance: XrInstance) {
@@ -334,6 +343,23 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			logger.warn("Theater environment unavailable, using a black void", err)
 			null
 		}
+	}
+
+	/**
+	 * A curved screen needs XR_KHR_composition_layer_cylinder or our own projection layer. The projection layer is
+	 * also used for flat screens when FELLYJIN_SCREEN=projection is set (for comparison on a device).
+	 */
+	private fun createScreen(instance: XrInstance) {
+		val forced = appEnv("SCREEN")?.lowercase() == "projection"
+		if (!forced && (!settings.curved || supportsCylinder)) return
+		screen = try {
+			ScreenRenderer(instance, systemId, requireNotNull(session), requireNotNull(localSpace))
+		} catch (err: Exception) {
+			logger.warn("Curved screen unavailable, using a flat screen", err)
+			null
+		}
+		logger.info("Screen: ${if (screen != null) "curved, drawn by the app" else "flat quad layer"}")
+		if (screen != null) VrDiagnostics.update { it.copy(features = it.features + "curved screen (drawn by Fellyjin)") }
 	}
 
 	/** Ask for the fastest refresh rate the headset offers (144 Hz on the Steam Frame), if the runtime allows it. */
@@ -613,13 +639,21 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		val scale = minOf(target.toFloat() / videoWidth, MAX_TEXTURE_SIZE.toFloat() / maxOf(videoWidth, videoHeight))
 		val width = (videoWidth * scale).toInt().coerceAtLeast(16)
 		val height = (videoHeight * scale).toInt().coerceAtLeast(16)
+		tuneForResolution(player, videoWidth)
+		screen?.let { screen ->
+			// The video goes into the screen's own mipmapped texture, no video swapchain needed
+			screenWidthPx = width
+			screenHeightPx = height
+			screen.resize(width, height)
+			videoThread?.setTargetSize(width, height)
+			return
+		}
 		val current = video
 		if (current != null && current.width == width && current.height == height) return
 
 		current?.close()
 		video = XrSwapchainImages.create(requireNotNull(session), width, height, "video")
 		videoThread?.setTargetSize(width, height)
-		tuneForResolution(player, videoWidth)
 	}
 
 	/**
@@ -659,7 +693,9 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			if (recenterPending) recenter(stack, displayTime)
 			updateHouseLights(player, displayTime)
 
-			if (video != null && videoThread?.hasNewFrame == true) copyVideo(stack)
+			if (videoThread?.hasNewFrame == true) {
+				if (screen != null) copyVideoToScreen() else if (video != null) copyVideo(stack)
+			}
 			pendingOsd?.let {
 				player.command("show-text", it, "4000")
 				pendingOsd = null
@@ -667,8 +703,23 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 			val layers = stack.mallocPointer(3)
 			if (frameState.shouldRender()) {
-				theater?.let { theater -> locateViews(stack, displayTime)?.let { layers.put(theater.render(stack, it, room)) } }
-				if (video?.hasContent == true) addVideoLayers(stack, layers)
+				val views = if (theater != null || screen != null) locateViews(stack, displayTime) else null
+				if (views != null) theater?.let { layers.put(it.render(stack, views, room)) }
+				val screen = screen
+				if (screen != null) {
+					if (screen.hasContent && views != null) {
+						updateRoom(displayAspect(screenWidthPx, screenHeightPx))
+						val rects = eyeRects(screenWidthPx, screenHeightPx).map { r ->
+							floatArrayOf(
+								r.x / screenWidthPx.toFloat(), r.y / screenHeightPx.toFloat(),
+								(r.x + r.width) / screenWidthPx.toFloat(), (r.y + r.height) / screenHeightPx.toFloat(),
+							)
+						}
+						layers.put(screen.render(stack, views, room, curved = settings.curved, eyeRects = rects))
+					}
+				} else if (video?.hasContent == true) {
+					addVideoLayers(stack, layers)
+				}
 			}
 			layers.flip()
 
@@ -708,7 +759,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	private fun updateHouseLights(player: MpvPlayer, displayTime: Long) {
 		if (lastPausePoll.elapsedNow() >= 100.milliseconds) {
 			lastPausePoll = TimeSource.Monotonic.markNow()
-			paused = player.isPaused || player.getProperty("paused-for-cache") == "yes" || video?.hasContent != true
+			paused = player.isPaused || player.getProperty("paused-for-cache") == "yes" || !hasVideo
 		}
 		val dt = if (lastFrameTime == 0L) 0f else ((displayTime - lastFrameTime) / 1e9f).coerceIn(0f, 0.1f)
 		lastFrameTime = displayTime
@@ -716,7 +767,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		// Lights dim over ~3 seconds and come up a bit faster, glow fades in with the first frames
 		val houseRate = if (house > room.houseLights) 1.2f else 0.6f
 		room.houseLights += (house - room.houseLights) * (1f - kotlin.math.exp(-houseRate * dt))
-		val glow = if (video?.hasContent == true) 1f else 0f
+		val glow = if (hasVideo) 1f else 0f
 		room.screenGlow += (glow - room.screenGlow) * (1f - kotlin.math.exp(-1.5f * dt))
 	}
 
@@ -861,6 +912,27 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		)
 	}
 
+	/** Aspect ratio of the picture as it should be displayed, for a (possibly stereo packed) frame of w x h. */
+	private fun displayAspect(w: Int, h: Int): Float = when (stereoLayout) {
+		StereoLayout.MONO, StereoLayout.SIDE_BY_SIDE_HALF, StereoLayout.TOP_BOTTOM_HALF -> w.toFloat() / h
+		StereoLayout.SIDE_BY_SIDE_FULL -> (w / 2f) / h
+		StereoLayout.TOP_BOTTOM_FULL -> w / (h / 2f)
+	}
+
+	/** Copy the newest frame into the curved screen's texture (and light the theater with it). */
+	private fun copyVideoToScreen() {
+		val screen = screen ?: return
+		val thread = videoThread ?: return
+		screen.update { fbo, width, height ->
+			thread.copyLatest(fbo, width, height) { source, w, h ->
+				theater?.let {
+					val rect = eyeRects(w, h).first()
+					it.captureScreen(source, rect.x, rect.y, rect.width, rect.height)
+				}
+			}
+		}
+	}
+
 	private fun addVideoLayers(stack: MemoryStack, layers: PointerBuffer) {
 		val video = requireNotNull(video)
 		val swapchain = video.swapchain
@@ -869,12 +941,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		val h = video.height
 		val rects = eyeRects(w, h)
 
-		// Aspect ratio of the picture as it should be displayed
-		val aspect = when (stereoLayout) {
-			StereoLayout.MONO, StereoLayout.SIDE_BY_SIDE_HALF, StereoLayout.TOP_BOTTOM_HALF -> w.toFloat() / h
-			StereoLayout.SIDE_BY_SIDE_FULL -> (w / 2f) / h
-			StereoLayout.TOP_BOTTOM_FULL -> w / (h / 2f)
-		}
+		val aspect = displayAspect(w, h)
 		updateRoom(aspect)
 
 		val orientation = yawQuaternion(screenYaw)
@@ -1034,9 +1101,11 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 		if (window != NULL) {
 			theater?.close()
+			screen?.close()
 			video?.close()
 		}
 		theater = null
+		screen = null
 		video = null
 		actions.values.forEach(::xrDestroyAction)
 		actions.clear()

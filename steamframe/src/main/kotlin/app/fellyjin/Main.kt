@@ -1,6 +1,9 @@
 package app.fellyjin
 
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import app.fellyjin.playback.PlaybackState
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.remember
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -123,6 +126,31 @@ fun main() {
 				onDispose {
 					focusNudger.stop()
 					gamepad.close()
+				}
+			}
+			// After VR the headset doesn't always bring this window back: bring it to the front ourselves, and map it
+			// again (a fresh window for gamescope) when that alone doesn't give it focus
+			LaunchedEffect(Unit) {
+				var inVr = false
+				playback.state.collect { state ->
+					when {
+						state is PlaybackState.Playing -> inVr = state.output == "VR cinema"
+						state is PlaybackState.Starting -> Unit
+						inVr -> {
+							inVr = false
+							LoggerFactory.getLogger("Fellyjin").info("VR playback ended, bringing the window back")
+							window.toFront()
+							window.requestFocus()
+							delay(1_000)
+							if (!window.isFocused) {
+								LoggerFactory.getLogger("Fellyjin").info("Window still not focused after VR, showing it again")
+								window.isVisible = false
+								window.isVisible = true
+								window.toFront()
+								window.requestFocus()
+							}
+						}
+					}
 				}
 			}
 			App(deps, initialScreen, gamepad, keys)

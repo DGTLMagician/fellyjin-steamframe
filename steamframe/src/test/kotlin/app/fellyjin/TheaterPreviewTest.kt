@@ -2,6 +2,14 @@ package app.fellyjin
 
 import app.fellyjin.vr.RoomState
 import app.fellyjin.vr.TheaterShader
+import app.fellyjin.vr.ScreenShader
+import org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT
+import org.lwjgl.opengl.GL11.GL_LINEAR
+import org.lwjgl.opengl.GL11.glClear
+import org.lwjgl.opengl.GL11.glClearColor
+import org.lwjgl.opengl.GL30.GL_DRAW_FRAMEBUFFER
+import org.lwjgl.opengl.GL30.GL_READ_FRAMEBUFFER
+import org.lwjgl.opengl.GL30.glBlitFramebuffer
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.lwjgl.BufferUtils
 import org.lwjgl.glfw.GLFW.GLFW_FALSE
@@ -101,6 +109,56 @@ class TheaterPreviewTest {
 				glBindFramebuffer(GL_FRAMEBUFFER, 0)
 			}
 			shader.close()
+		} finally {
+			glfwDestroyWindow(window)
+			glfwTerminate()
+		}
+	}
+
+	@Test
+	fun renderCurvedScreenPreview() {
+		assumeTrue(Platform.get() == Platform.LINUX && System.getenv("DISPLAY") != null, "Needs Linux with an X display")
+
+		glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11)
+		check(glfwInit())
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE)
+		val window = glfwCreateWindow(16, 16, "preview", NULL, NULL)
+		check(window != NULL)
+		glfwMakeContextCurrent(window)
+		GL.createCapabilities()
+		try {
+			val width = 1920
+			val height = 1080
+			val target = framebuffer(width, height)
+			val video = syntheticMovieFrame()
+			for (curved in listOf(true, false)) {
+				val screen = ScreenShader()
+				screen.resize(320, 180)
+				screen.update { fbo, w, h ->
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, video)
+					glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo)
+					glBlitFramebuffer(0, 0, 320, 180, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR)
+					glBindFramebuffer(GL_FRAMEBUFFER, 0)
+					true
+				}
+				val room = RoomState().apply {
+					screenWidth = 24f
+					screenHeight = 13.5f
+					distance = 15f
+				}
+				val tanH = tan(Math.toRadians(55.0)).toFloat()
+				val tanV = tanH * height / width
+				glBindFramebuffer(GL_FRAMEBUFFER, target)
+				glClearColor(0.05f, 0.05f, 0.08f, 1f)
+				glClear(GL_COLOR_BUFFER_BIT)
+				screen.begin(room, curved)
+				screen.drawEye(room, 0f, 0f, 0f, 0f, 0f, 0f, 1f, -tanH, tanH, -tanV, tanV, floatArrayOf(0f, 0f, 1f, 1f), width, height)
+				screen.end()
+				glBindFramebuffer(GL_FRAMEBUFFER, target)
+				writePng(File("build/snapshots/screen-${if (curved) "curved" else "flat"}.png"), width, height)
+				glBindFramebuffer(GL_FRAMEBUFFER, 0)
+				screen.close()
+			}
 		} finally {
 			glfwDestroyWindow(window)
 			glfwTerminate()

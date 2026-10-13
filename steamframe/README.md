@@ -80,6 +80,15 @@ The VR cinema prefers an EGL context (`XR_MNDX_egl_enable`) and falls back to GL
 (`XR_KHR_opengl_enable` Xlib binding). `FELLYJIN_XR_GL=egl|glx` forces one. If VR can't start, playback continues
 in a window, and Settings → VR status shows the exact reason, the runtime and the active features.
 
+### Curved screen without cylinder layers
+
+SteamVR on the Steam Frame doesn't offer `XR_KHR_composition_layer_cylinder`. There, Fellyjin draws the curved
+screen itself as a projection layer: per eye, one full screen pass intersects the view ray with the screen cylinder
+and samples the video from a mipmapped, anisotropically filtered texture. That texture is updated once per video
+frame, which keeps 4K free of shimmer on a screen smaller than the video. Edges are anti-aliased, and the
+surroundings stay transparent so the theater shows through. Runtimes that do offer cylinder layers keep using
+them. `FELLYJIN_SCREEN=projection` forces the app-drawn screen.
+
 ### Smoothness at 144 Hz
 
 - The app asks for the headset's highest refresh rate through `XR_FB_display_refresh_rate` when SteamVR exposes it.

@@ -186,7 +186,7 @@ class TheaterRenderer(
 
 /** The theater shader and its glow texture. Independent of OpenXR so it can be previewed offscreen. */
 class TheaterShader : AutoCloseable {
-	private val program = linkProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+	private val program = linkShaderProgram(VERTEX_SHADER, FRAGMENT_SHADER)
 	private val vao = glGenVertexArrays()
 
 	// Small mipmapped copy of the video frame used to light the room
@@ -281,7 +281,7 @@ class TheaterShader : AutoCloseable {
 		val dy = eyeY - room.originY
 		val dz = eyeZ - room.originZ
 		glUniform3f(uEye, cy * dx + sy * dz, dy, -sy * dx + cy * dz)
-		viewToRoom(qx, qy, qz, qw, cy, sy)
+		viewToRoom(viewToRoom, qx, qy, qz, qw, cy, sy)
 		glUniformMatrix3fv(uViewToRoom, false, viewToRoom)
 		glUniform4f(uFov, tanLeft, tanRight, tanDown, tanUp)
 		glUniform1i(uOutputSrgb, if (outputSrgb) 1 else 0)
@@ -295,30 +295,6 @@ class TheaterShader : AutoCloseable {
 		glBindTexture(GL_TEXTURE_2D, 0)
 	}
 
-	/** Column-major mat3: rotate by the eye orientation quaternion, then by -yaw around Y. */
-	private fun viewToRoom(x: Float, y: Float, z: Float, w: Float, cy: Float, sy: Float) {
-		// Quaternion to rotation matrix (columns are the rotated basis vectors)
-		val m00 = 1 - 2 * (y * y + z * z)
-		val m10 = 2 * (x * y + z * w)
-		val m20 = 2 * (x * z - y * w)
-		val m01 = 2 * (x * y - z * w)
-		val m11 = 1 - 2 * (x * x + z * z)
-		val m21 = 2 * (y * z + x * w)
-		val m02 = 2 * (x * z + y * w)
-		val m12 = 2 * (y * z - x * w)
-		val m22 = 1 - 2 * (x * x + y * y)
-		// Ry(-yaw) * M, with Ry rows (cy, 0, sy), (0, 1, 0), (-sy, 0, cy). Written out to avoid per frame allocations.
-		viewToRoom[0] = cy * m00 + sy * m20
-		viewToRoom[1] = m10
-		viewToRoom[2] = -sy * m00 + cy * m20
-		viewToRoom[3] = cy * m01 + sy * m21
-		viewToRoom[4] = m11
-		viewToRoom[5] = -sy * m01 + cy * m21
-		viewToRoom[6] = cy * m02 + sy * m22
-		viewToRoom[7] = m12
-		viewToRoom[8] = -sy * m02 + cy * m22
-	}
-
 	override fun close() {
 		glDeleteProgram(program)
 		glDeleteVertexArrays(vao)
@@ -329,31 +305,6 @@ class TheaterShader : AutoCloseable {
 	private companion object {
 		const val GLOW_WIDTH = 64
 		const val GLOW_HEIGHT = 36
-
-		fun linkProgram(vertex: String, fragment: String): Int {
-			fun compile(type: Int, source: String): Int {
-				val shader = glCreateShader(type)
-				glShaderSource(shader, source)
-				glCompileShader(shader)
-				if (glGetShaderi(shader, GL_COMPILE_STATUS) == 0) {
-					throw XrException("Theater shader failed to compile: ${glGetShaderInfoLog(shader)}")
-				}
-				return shader
-			}
-
-			val vs = compile(GL_VERTEX_SHADER, vertex)
-			val fs = compile(GL_FRAGMENT_SHADER, fragment)
-			val program = glCreateProgram()
-			glAttachShader(program, vs)
-			glAttachShader(program, fs)
-			glLinkProgram(program)
-			glDeleteShader(vs)
-			glDeleteShader(fs)
-			if (glGetProgrami(program, GL_LINK_STATUS) == 0) {
-				throw XrException("Theater shader failed to link: ${glGetProgramInfoLog(program)}")
-			}
-			return program
-		}
 
 		// Full screen triangle. The view ray is linear in screen space, so it is computed per vertex. The three screen
 		// light zones are sampled per vertex too (flat), which keeps texture fetches out of the fragment shader.
@@ -513,3 +464,55 @@ class TheaterShader : AutoCloseable {
 		""".trimIndent()
 	}
 }
+
+/**
+ * Column-major mat3 into [out]: rotate by the eye orientation quaternion, then by -yaw around Y (cos/sin of -yaw given
+ * as [cy]/[sy]). Converts view space directions into room space. Written out to avoid per frame allocations.
+ */
+internal fun viewToRoom(out: FloatArray, x: Float, y: Float, z: Float, w: Float, cy: Float, sy: Float) {
+	val m00 = 1 - 2 * (y * y + z * z)
+	val m10 = 2 * (x * y + z * w)
+	val m20 = 2 * (x * z - y * w)
+	val m01 = 2 * (x * y - z * w)
+	val m11 = 1 - 2 * (x * x + z * z)
+	val m21 = 2 * (y * z + x * w)
+	val m02 = 2 * (x * z + y * w)
+	val m12 = 2 * (y * z - x * w)
+	val m22 = 1 - 2 * (x * x + y * y)
+	// Ry(-yaw) * M, with Ry rows (cy, 0, sy), (0, 1, 0), (-sy, 0, cy)
+	out[0] = cy * m00 + sy * m20
+	out[1] = m10
+	out[2] = -sy * m00 + cy * m20
+	out[3] = cy * m01 + sy * m21
+	out[4] = m11
+	out[5] = -sy * m01 + cy * m21
+	out[6] = cy * m02 + sy * m22
+	out[7] = m12
+	out[8] = -sy * m02 + cy * m22
+}
+
+	/** Compile and link a GLSL program, throwing [XrException] with the driver's log on errors. */
+internal fun linkShaderProgram(vertex: String, fragment: String): Int {
+		fun compile(type: Int, source: String): Int {
+			val shader = glCreateShader(type)
+			glShaderSource(shader, source)
+			glCompileShader(shader)
+			if (glGetShaderi(shader, GL_COMPILE_STATUS) == 0) {
+				throw XrException("Shader failed to compile: ${glGetShaderInfoLog(shader)}")
+			}
+			return shader
+		}
+
+		val vs = compile(GL_VERTEX_SHADER, vertex)
+		val fs = compile(GL_FRAGMENT_SHADER, fragment)
+		val program = glCreateProgram()
+		glAttachShader(program, vs)
+		glAttachShader(program, fs)
+		glLinkProgram(program)
+		glDeleteShader(vs)
+		glDeleteShader(fs)
+		if (glGetProgrami(program, GL_LINK_STATUS) == 0) {
+			throw XrException("Shader failed to link: ${glGetProgramInfoLog(program)}")
+		}
+		return program
+	}
