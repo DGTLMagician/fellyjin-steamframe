@@ -21,6 +21,7 @@ import app.fellyjin.ui.App
 import app.fellyjin.ui.AppDependencies
 import app.fellyjin.ui.Screen
 import app.fellyjin.input.KeyboardDiagnostics
+import app.fellyjin.playback.AwtVideoHost
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -102,6 +103,8 @@ fun main() {
 			DisposableEffect(Unit) {
 				// Ask for keyboard focus too, for Steam Input layouts that send keys instead of gamepad input
 				KeyboardDiagnostics.install(window)
+				// Windowed playback draws inside this window, gamescope only shows one window per app
+				playback.videoHost = AwtVideoHost(window)
 				window.toFront()
 				window.requestFocus()
 				// Gamescope doesn't always hand keyboard focus to a Java window. Keep asking while we don't have it (and

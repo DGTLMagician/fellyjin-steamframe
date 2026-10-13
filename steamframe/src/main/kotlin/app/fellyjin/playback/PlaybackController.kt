@@ -28,6 +28,7 @@ import app.fellyjin.mpv.EndReason
 import app.fellyjin.mpv.LibMpv
 import app.fellyjin.mpv.MpvEvent
 import app.fellyjin.mpv.MpvPlayer
+import app.fellyjin.input.UiAction
 import app.fellyjin.vr.VrDiagnostics
 import app.fellyjin.vr.XrCinemaOutput
 import org.jellyfin.sdk.model.api.PlayMethod
@@ -70,6 +71,33 @@ class PlaybackController(
 	private var activePlayer: MpvPlayer? = null
 
 	val isActive: Boolean get() = thread?.isAlive == true
+
+	/** Surface in the app window for windowed playback, set once the window exists. */
+	@Volatile
+	var videoHost: VideoHost? = null
+
+	/** True while playing in a window, where the app's controls drive mpv (VR has its own controller input). */
+	@Volatile
+	var windowedPlayback = false
+		private set
+
+	/** Handle a controller/keyboard action during windowed playback. Returns false when not playing in a window. */
+	fun handle(action: UiAction): Boolean {
+		val player = activePlayer ?: return false
+		if (!windowedPlayback) return false
+		when (action) {
+			UiAction.ACTIVATE -> {
+				player.commandString("cycle pause")
+				player.commandString("show-progress")
+			}
+			UiAction.BACK -> stop()
+			UiAction.LEFT -> player.commandString("osd-msg-bar seek -10")
+			UiAction.RIGHT -> player.commandString("osd-msg-bar seek 30")
+			UiAction.UP -> player.commandString("osd-msg-bar add volume 5")
+			UiAction.DOWN -> player.commandString("osd-msg-bar add volume -5")
+		}
+		return true
+	}
 
 	/**
 	 * Show the cinema with a colorful generated test video, without a server: lets users try the theater and screen
@@ -116,16 +144,17 @@ class PlaybackController(
 				logger.warn("Unable to start the VR cinema, falling back to a flat window", err)
 				VrDiagnostics.failed(err.message ?: err.toString())
 				notice = "VR cinema unavailable: ${err.message}. Playing in a window instead, see Settings → VR status."
-				FlatWindowOutput()
+				FlatWindowOutput(videoHost)
 			}
 
-			PlaybackMode.FLAT -> FlatWindowOutput()
+			PlaybackMode.FLAT -> FlatWindowOutput(videoHost)
 		}
 
 		var player: MpvPlayer? = null
 		try {
 			player = MpvPlayer(baseOptions() + output.mpvOptions())
 			activePlayer = player
+			windowedPlayback = output is FlatWindowOutput
 			output.attach(player)
 
 			var stream = if (item.id == PREVIEW_ITEM.id) previewStream()
@@ -200,6 +229,7 @@ class PlaybackController(
 			_state.value = PlaybackState.Failed(err.message ?: err.toString())
 		} finally {
 			activePlayer = null
+			windowedPlayback = false
 			player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
 			player?.close()
 			if (_state.value !is PlaybackState.Failed) _state.value = PlaybackState.Idle

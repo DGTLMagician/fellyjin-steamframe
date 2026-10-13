@@ -63,6 +63,13 @@ src/main/kotlin/app/fellyjin/
 - **Preview cinema** (Settings → VR cinema) opens the theater with a colorful test video, without a server, to try
   screen sizes and check that VR works.
 
+### Playing in a window
+
+Without VR (or when it can't start), mpv draws into a surface inside the Fellyjin window (`--wid`) instead of
+opening its own window. Gamescope shows only one window per app, so a separate player window would play unseen
+with only the audio audible. Controls during windowed playback: A / Space pauses, B / Escape stops, left/right
+seeks, up/down changes the volume.
+
 ### Starting VR
 
 The VR cinema prefers an EGL context (`XR_MNDX_egl_enable`) and falls back to GLX

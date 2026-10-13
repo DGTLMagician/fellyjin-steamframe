@@ -135,7 +135,8 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 			when (event) {
 				is GamepadEvent.Connected -> controllerToast = "Controller connected: ${event.name}"
 				GamepadEvent.Disconnected -> controllerToast = "Controller disconnected"
-				is GamepadEvent.Action -> when (event.action) {
+				// While a video plays in the window, the controller drives the player
+				is GamepadEvent.Action -> if (!deps.playback.handle(event.action)) when (event.action) {
 					UiAction.UP -> focusManager.moveFocusOrEnter(FocusDirection.Up)
 					UiAction.DOWN -> focusManager.moveFocusOrEnter(FocusDirection.Down)
 					UiAction.LEFT -> focusManager.moveFocusOrEnter(FocusDirection.Left)
@@ -161,6 +162,18 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 				// Text fields consume the keys they need before they reach this handler.
 				.onKeyEvent { event ->
 					if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+					if (deps.playback.windowedPlayback) {
+						val action = when (event.key) {
+							Key.Spacebar, Key.Enter -> UiAction.ACTIVATE
+							Key.Escape, Key.Backspace -> UiAction.BACK
+							Key.DirectionLeft -> UiAction.LEFT
+							Key.DirectionRight -> UiAction.RIGHT
+							Key.DirectionUp -> UiAction.UP
+							Key.DirectionDown -> UiAction.DOWN
+							else -> null
+						}
+						if (action != null && deps.playback.handle(action)) return@onKeyEvent true
+					}
 					when (event.key) {
 						Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
 						Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
