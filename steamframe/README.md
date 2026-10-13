@@ -1,5 +1,9 @@
 # Jellyfin for Steam Frame
 
+> [!IMPORTANT]
+> Unofficial personal fork, not affiliated with the Jellyfin Project or Valve. Built largely with
+> [Claude Code](https://claude.com/claude-code). See the [main README](../README.md) for details.
+
 A native ARM64 Linux port of Jellyfin for Android TV, built for SteamOS on the Valve Steam Frame. Movies and shows
 play on a huge virtual cinema screen through OpenXR (SteamVR). If OpenXR is not available, playback falls back to a
 fullscreen window.
