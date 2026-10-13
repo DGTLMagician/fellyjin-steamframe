@@ -29,6 +29,8 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextAlign
@@ -103,8 +105,16 @@ class AppDependencies(
 	val playback: PlaybackController,
 )
 
+/**
+ * Window level key handling. The window calls [handler] for keys no focused element consumed, also when nothing in
+ * the UI has focus (a modifier on the root layout only sees keys while something inside it is focused).
+ */
+class KeyRouter {
+	var handler: ((KeyEvent) -> Boolean)? = null
+}
+
 @Composable
-fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = null) {
+fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = null, keys: KeyRouter? = null) {
 	setSingletonImageLoaderFactory { context ->
 		ImageLoader.Builder(context)
 			.crossfade(true)
@@ -127,6 +137,33 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 		if (deps.playback.isActive) deps.playback.stop()
 		else if (deps.playback.state.value is PlaybackState.Failed) deps.playback.dismissError()
 		else navigator.back()
+	}
+
+	// Keyboard (and Steam Input layouts that send keys): Enter activates, Escape goes back, arrows move focus
+	DisposableEffect(keys) {
+		keys?.handler = handler@{ event ->
+			if (event.type != KeyEventType.KeyDown) return@handler false
+			val action = when (event.key) {
+				Key.Enter, Key.NumPadEnter, Key.Spacebar -> UiAction.ACTIVATE
+				Key.Escape, Key.Backspace -> UiAction.BACK
+				Key.DirectionLeft -> UiAction.LEFT
+				Key.DirectionRight -> UiAction.RIGHT
+				Key.DirectionUp -> UiAction.UP
+				Key.DirectionDown -> UiAction.DOWN
+				else -> return@handler false
+			}
+			if (deps.playback.handle(action)) return@handler true
+			when (action) {
+				UiAction.UP -> focusManager.moveFocusOrEnter(FocusDirection.Up)
+				UiAction.DOWN -> focusManager.moveFocusOrEnter(FocusDirection.Down)
+				UiAction.LEFT -> focusManager.moveFocusOrEnter(FocusDirection.Left)
+				UiAction.RIGHT -> focusManager.moveFocusOrEnter(FocusDirection.Right)
+				UiAction.ACTIVATE -> activation.focused?.invoke() ?: return@handler false
+				UiAction.BACK -> back()
+			}
+			true
+		}
+		onDispose { keys?.handler = null }
 	}
 
 	// Controller input, handled in Compose so it works even when gamescope never gives the window keyboard focus
@@ -156,36 +193,7 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 
 	FellyjinTheme {
 		Box(
-			Modifier
-				.fillMaxSize()
-				// Arrow keys (d-pad with Steam Input) move the focus, Escape / Backspace (B button) goes back.
-				// Text fields consume the keys they need before they reach this handler.
-				.onKeyEvent { event ->
-					if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-					if (deps.playback.windowedPlayback) {
-						val action = when (event.key) {
-							Key.Spacebar, Key.Enter -> UiAction.ACTIVATE
-							Key.Escape, Key.Backspace -> UiAction.BACK
-							Key.DirectionLeft -> UiAction.LEFT
-							Key.DirectionRight -> UiAction.RIGHT
-							Key.DirectionUp -> UiAction.UP
-							Key.DirectionDown -> UiAction.DOWN
-							else -> null
-						}
-						if (action != null && deps.playback.handle(action)) return@onKeyEvent true
-					}
-					when (event.key) {
-						Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
-						Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
-						Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
-						Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-						Key.Escape, Key.Backspace -> {
-							back()
-							true
-						}
-						else -> false
-					}
-				}
+			Modifier.fillMaxSize()
 		) {
 			AmbientBackground()
 

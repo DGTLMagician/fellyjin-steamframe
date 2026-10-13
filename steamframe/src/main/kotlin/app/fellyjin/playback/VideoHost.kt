@@ -15,6 +15,9 @@ import javax.swing.RootPaneContainer
  *
  * Gamescope (SteamOS gaming mode) shows a single window per app. A separate mpv window ends up hidden behind the
  * Fellyjin window, so you only hear the audio. Drawing into a child of our own window always shows the video.
+ *
+ * The on-screen controls are mpv's own OSC, drawn inside the video: mpv's native child window covers anything the
+ * app could draw on top of it.
  */
 interface VideoHost {
 	/** Show the surface and return its native window id, or null when embedding is not possible. */

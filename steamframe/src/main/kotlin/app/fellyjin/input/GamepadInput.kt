@@ -258,7 +258,13 @@ class GamepadInput(
 		val raw = joystick?.let { handle ->
 			(0 until sdl.SDL_JoystickNumButtons(handle).coerceAtMost(64)).filter { sdl.SDL_JoystickGetButton(handle, it).toInt() != 0 }.toSet()
 		}.orEmpty()
-		if (raw.toList() != _status.value.rawButtons) _status.update { it.copy(rawButtons = raw.sorted()) }
+		if (raw.sorted() != _status.value.rawButtons) {
+			if (raw.isNotEmpty() && loggedInputs < 40) {
+				loggedInputs++
+				logger.info("Raw buttons held on ${device.name}: ${raw.sorted()}")
+			}
+			_status.update { it.copy(rawButtons = raw.sorted()) }
+		}
 
 		val base = when (device) {
 			is Device.Controller -> {
@@ -336,7 +342,13 @@ class GamepadInput(
 		}
 	}
 
+	private var loggedInputs = 0
+
 	private fun emit(action: UiAction) {
+		if (loggedInputs < 40) {
+			loggedInputs++
+			logger.info("Gamepad action $action")
+		}
 		_status.update { it.copy(lastInput = action.name, inputCount = it.inputCount + 1) }
 		_events.tryEmit(GamepadEvent.Action(action))
 	}

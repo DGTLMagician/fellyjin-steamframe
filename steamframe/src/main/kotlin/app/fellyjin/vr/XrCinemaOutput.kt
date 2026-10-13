@@ -84,6 +84,7 @@ import org.lwjgl.openxr.XrViewState
 import org.lwjgl.system.MemoryStack
 import org.lwjgl.system.MemoryStack.stackPush
 import org.lwjgl.system.MemoryUtil.NULL
+import org.lwjgl.system.Configuration
 import org.lwjgl.system.Platform
 import org.slf4j.LoggerFactory
 import kotlin.math.PI
@@ -1070,7 +1071,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	/** Quaternion (x, y, z, w) for a rotation of [yaw] radians around the Y (up) axis. */
 	private fun yawQuaternion(yaw: Float) = floatArrayOf(0f, sin(yaw / 2f), 0f, cos(yaw / 2f))
 
-	private companion object {
+	internal companion object {
 		const val MAX_TEXTURE_SIZE = 4096
 		const val FRAME_CONTROLLER_EXTENSION = "XR_VALVE_frame_controller_interaction"
 		const val FRAME_CONTROLLER_PROFILE = "/interaction_profiles/valve/frame_controller_valve"
@@ -1084,11 +1085,19 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		@Volatile
 		var loaderCreated = false
 
+		/**
+		 * Load the OpenXR loader once. LWJGL already loads it when the XR class initializes (unless explicit init is
+		 * configured), so a second XR.create() throws "OpenXR has already been created": treat that as success.
+		 */
 		@Synchronized
-		fun ensureLoader() {
+		internal fun ensureLoader() {
 			if (loaderCreated) return
-			val custom = appEnv("OPENXR_LOADER")
-			if (custom != null) XR.create(custom) else XR.create()
+			appEnv("OPENXR_LOADER")?.let { Configuration.OPENXR_LIBRARY_NAME.set(it) }
+			try {
+				XR.create()
+			} catch (err: IllegalStateException) {
+				if (err.message?.contains("already been created") != true) throw err
+			}
 			loaderCreated = true
 		}
 	}

@@ -19,6 +19,7 @@ import app.fellyjin.input.GamepadInput
 import app.fellyjin.playback.PlaybackController
 import app.fellyjin.ui.App
 import app.fellyjin.ui.AppDependencies
+import app.fellyjin.ui.KeyRouter
 import app.fellyjin.ui.Screen
 import app.fellyjin.input.KeyboardDiagnostics
 import app.fellyjin.playback.AwtVideoHost
@@ -73,6 +74,9 @@ fun main() {
 		else -> Screen.ServerSelect
 	}
 
+	// Keys reach the app through the window, see KeyRouter
+	val keys = KeyRouter()
+
 	application {
 		val windowState = rememberWindowState(
 			placement = if (runningInGamescope() || appEnv("FULLSCREEN") == "1") WindowPlacement.Fullscreen else WindowPlacement.Maximized,
@@ -88,6 +92,7 @@ fun main() {
 			state = windowState,
 			title = BuildInfo.APP_NAME,
 			icon = appIcon,
+			onKeyEvent = { event -> keys.handler?.invoke(event) ?: false },
 			onPreviewKeyEvent = { event ->
 				// F11 toggles fullscreen
 				if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
@@ -120,7 +125,7 @@ fun main() {
 					gamepad.close()
 				}
 			}
-			App(deps, initialScreen, gamepad)
+			App(deps, initialScreen, gamepad, keys)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package app.fellyjin.playback
 
+import app.fellyjin.appEnv
 import app.fellyjin.mpv.MpvPlayer
+import org.slf4j.LoggerFactory
 
 /** Where mpv draws its video: a VR cinema screen or a plain window. All functions run on the playback thread. */
 interface VideoOutput {
@@ -34,9 +36,24 @@ interface VideoOutput {
  * keyboard in a separate window.
  */
 class FlatWindowOutput(private val host: VideoHost? = null) : VideoOutput {
+	private val logger = LoggerFactory.getLogger(FlatWindowOutput::class.java)
 	private val windowId: Long? = runCatching { host?.show() }.getOrNull()
 
 	override val name = if (windowId != null) "Window" else "Flat window"
+
+	/** GPU contexts to try in order, FELLYJIN_GPU_CONTEXT forces one. */
+	private val contexts = appEnv("GPU_CONTEXT")?.let { listOf(it) } ?: listOf("x11vk", "x11egl")
+	private var contextIndex = 0
+
+	/** The video output opens while mpv initializes, so a failing GPU context fails there: try the next one. */
+	fun fallBack(): Boolean {
+		if (windowId == null || contextIndex >= contexts.lastIndex) return false
+		contextIndex++
+		logger.warn("Video output failed, retrying with ${contexts[contextIndex]}")
+		return true
+	}
+
+	val gpuContext: String? get() = if (windowId != null) contexts[contextIndex] else null
 	override val eventTimeoutSeconds = 0.05
 
 	override fun mpvOptions() = buildMap {
@@ -49,9 +66,17 @@ class FlatWindowOutput(private val host: VideoHost? = null) : VideoOutput {
 		put("deband", "yes")
 		if (windowId != null) {
 			put("wid", windowId.toString())
-			// The surface is an X11 window (XWayland under gamescope), keep mpv off its Wayland backend
-			put("gpu-context", "x11egl")
+			// The surface is an X11 window (XWayland under gamescope), keep mpv off its Wayland backend. Vulkan first:
+			// it is the Steam Frame's native driver (Turnip), OpenGL there goes through Zink and showed wrong colors.
+			val context = contexts[contextIndex]
+			put("gpu-context", context)
+			put("gpu-api", if (context.endsWith("vk")) "vulkan" else "opengl")
+			// Keys come from the app (gamepad and keyboard). The pointer (VR laser) drives mpv's on-screen controller:
+			// an auto-hiding bar with seek bar, play/pause, chapters, audio and subtitle tracks and volume.
 			put("input-vo-keyboard", "no")
+			put("input-default-bindings", "yes")
+			put("osc", "yes")
+			put("script-opts", OSC_OPTIONS)
 		} else {
 			put("fullscreen", "yes")
 			put("input-default-bindings", "yes")
@@ -69,6 +94,12 @@ class FlatWindowOutput(private val host: VideoHost? = null) : VideoOutput {
 	}
 
 	override fun frame(player: MpvPlayer) = true
+
+	private companion object {
+		/** Large bottom bar, readable on a big virtual screen, hides 3 s after the pointer stops moving. */
+		const val OSC_OPTIONS = "osc-layout=bottombar,osc-scalewindowed=2.2,osc-scalefullscreen=2.2,osc-vidscale=no," +
+			"osc-hidetimeout=3000,osc-fadeduration=250,osc-seekbarstyle=bar,osc-deadzonesize=0"
+	}
 
 	override fun close(player: MpvPlayer) {
 		if (windowId != null) host?.hide()

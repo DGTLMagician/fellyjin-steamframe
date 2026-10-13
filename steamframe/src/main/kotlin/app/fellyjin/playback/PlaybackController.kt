@@ -152,7 +152,7 @@ class PlaybackController(
 
 		var player: MpvPlayer? = null
 		try {
-			player = MpvPlayer(baseOptions() + output.mpvOptions())
+			player = createPlayer(output)
 			activePlayer = player
 			windowedPlayback = output is FlatWindowOutput
 			output.attach(player)
@@ -230,10 +230,31 @@ class PlaybackController(
 		} finally {
 			activePlayer = null
 			windowedPlayback = false
-			player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
-			player?.close()
+			if (output is FlatWindowOutput) {
+				// mpv draws into a child of the video surface: destroy mpv first, removing the surface while mpv still
+				// uses it is an X11 error, which ends the whole process
+				player?.close()
+				player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
+			} else {
+				// The VR output frees mpv's render context, which must happen before mpv is destroyed
+				player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
+				player?.close()
+			}
 			if (_state.value !is PlaybackState.Failed) _state.value = PlaybackState.Idle
 			thread = null
+		}
+	}
+
+	/** Create mpv, trying the window output's GPU contexts in order when one can't open the video output. */
+	private fun createPlayer(output: VideoOutput): MpvPlayer {
+		while (true) {
+			try {
+				return MpvPlayer(baseOptions() + output.mpvOptions()).also {
+					(output as? FlatWindowOutput)?.gpuContext?.let { context -> logger.info("Window video output uses $context") }
+				}
+			} catch (err: IllegalStateException) {
+				if ((output as? FlatWindowOutput)?.fallBack() != true) throw err
+			}
 		}
 	}
 

@@ -67,8 +67,12 @@ src/main/kotlin/app/fellyjin/
 
 Without VR (or when it can't start), mpv draws into a surface inside the Fellyjin window (`--wid`) instead of
 opening its own window. Gamescope shows only one window per app, so a separate player window would play unseen
-with only the audio audible. Controls during windowed playback: A / Space pauses, B / Escape stops, left/right
-seeks, up/down changes the volume.
+with only the audio audible. mpv draws with Vulkan (the Frame's native driver) and falls back to EGL when
+Vulkan can't open; `FELLYJIN_GPU_CONTEXT=x11egl` forces OpenGL.
+
+Point at the video with the laser and mpv's on-screen controller appears: seek bar, play/pause, chapters, audio
+and subtitle tracks and volume. It hides again after 3 seconds. With the controller or keyboard: A / Space pauses,
+B / Escape stops, left/right seeks, up/down changes the volume.
 
 ### Starting VR
 

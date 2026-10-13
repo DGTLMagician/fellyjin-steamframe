@@ -39,7 +39,7 @@ object KeyboardDiagnostics {
 		Toolkit.getDefaultToolkit().addAWTEventListener({ event ->
 			if (event is KeyEvent && event.id == KeyEvent.KEY_PRESSED) {
 				val key = KeyEvent.getKeyText(event.keyCode)
-				if (_status.value.keyCount == 0) logger.info("First key event received: $key")
+				if (_status.value.keyCount < 40) logger.info("Key pressed: $key")
 				_status.update { it.copy(lastKey = key, keyCount = it.keyCount + 1) }
 			}
 		}, AWTEvent.KEY_EVENT_MASK)

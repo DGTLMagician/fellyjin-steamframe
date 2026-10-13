@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "app.fellyjin"
-version = "0.5.1"
+version = "0.6.0"
 
 java {
 	sourceCompatibility = JavaVersion.VERSION_21
