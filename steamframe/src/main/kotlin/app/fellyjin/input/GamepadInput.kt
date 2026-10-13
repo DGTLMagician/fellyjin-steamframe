@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import app.fellyjin.data.ControllerMapping
 import org.slf4j.LoggerFactory
 import java.io.File
 import kotlin.math.abs
@@ -31,6 +32,10 @@ data class GamepadStatus(
 	val active: String? = null,
 	val lastInput: String? = null,
 	val inputCount: Int = 0,
+	/** Raw joystick button numbers that are held down right now. */
+	val rawButtons: List<Int> = emptyList(),
+	/** Waiting for a button press to assign, see [GamepadInput.learnButton]. */
+	val learning: Boolean = false,
 )
 
 /**
@@ -44,7 +49,10 @@ data class GamepadStatus(
  * Joysticks without a mapping fall back to the raw joystick API with the common layout (button 0 = A, 1 = B, hat or
  * first stick for directions). All SDL calls happen on one dedicated thread.
  */
-class GamepadInput : AutoCloseable {
+class GamepadInput(
+	/** User chosen raw button numbers, read on every poll so changes apply immediately. */
+	private val mapping: () -> ControllerMapping = { ControllerMapping() },
+) : AutoCloseable {
 	private val logger = LoggerFactory.getLogger(GamepadInput::class.java)
 
 	@Volatile
@@ -77,6 +85,7 @@ class GamepadInput : AutoCloseable {
 		fun SDL_GameControllerUpdate()
 		fun SDL_GameControllerGetButton(controller: Pointer, button: Int): Byte
 		fun SDL_GameControllerGetAxis(controller: Pointer, axis: Int): Short
+		fun SDL_GameControllerGetJoystick(controller: Pointer): Pointer?
 		fun SDL_JoystickOpen(index: Int): Pointer?
 		fun SDL_JoystickGetAttached(joystick: Pointer): Boolean
 		fun SDL_JoystickClose(joystick: Pointer)
@@ -97,11 +106,30 @@ class GamepadInput : AutoCloseable {
 		data class Joystick(val handle: Pointer, override val name: String) : Device
 	}
 
-	/** Snapshot of the inputs this app uses. */
+	/** Snapshot of the inputs this app uses, plus the raw buttons held down. */
 	private data class Inputs(
 		val up: Boolean, val down: Boolean, val left: Boolean, val right: Boolean,
 		val a: Boolean, val b: Boolean,
+		val raw: Set<Int>,
 	)
+
+	@Volatile
+	private var learnCallback: ((Int) -> Unit)? = null
+	private var previousRaw = emptySet<Int>()
+
+	/**
+	 * Wait for the next button press and report its raw number to [onLearned] (called on the input thread). Used to
+	 * assign buttons on controllers without a known mapping.
+	 */
+	fun learnButton(onLearned: (Int) -> Unit) {
+		learnCallback = onLearned
+		_status.update { it.copy(learning = true) }
+	}
+
+	fun cancelLearning() {
+		learnCallback = null
+		_status.update { it.copy(learning = false) }
+	}
 
 	/** Repeat state per action: when it went down and when it last fired. */
 	private val pressedSince = mutableMapOf<UiAction, Long>()
@@ -160,6 +188,19 @@ class GamepadInput : AutoCloseable {
 			}
 
 			device?.let { read(sdl, it) }?.let { inputs ->
+				// A press while learning assigns that button and is not handled as UI input
+				val learn = learnCallback
+				val newlyPressed = inputs.raw - previousRaw
+				previousRaw = inputs.raw
+				if (learn != null) {
+					newlyPressed.firstOrNull()?.let { button ->
+						learnCallback = null
+						logger.info("Learned raw button $button")
+						_status.update { it.copy(learning = false) }
+						learn(button)
+					}
+					return@let
+				}
 				update(UiAction.UP, inputs.up, repeat = true)
 				update(UiAction.DOWN, inputs.down, repeat = true)
 				update(UiAction.LEFT, inputs.left, repeat = true)
@@ -209,41 +250,60 @@ class GamepadInput : AutoCloseable {
 		is Device.Joystick -> sdl.SDL_JoystickClose(device.handle)
 	}
 
-	private fun read(sdl: Sdl, device: Device): Inputs = when (device) {
-		is Device.Controller -> {
-			fun button(id: Int) = sdl.SDL_GameControllerGetButton(device.handle, id).toInt() != 0
-			val (x, y) = stick(
-				sdl.SDL_GameControllerGetAxis(device.handle, AXIS_LEFTX),
-				sdl.SDL_GameControllerGetAxis(device.handle, AXIS_LEFTY),
-			)
-			Inputs(
-				up = button(BUTTON_DPAD_UP) || y < 0,
-				down = button(BUTTON_DPAD_DOWN) || y > 0,
-				left = button(BUTTON_DPAD_LEFT) || x < 0,
-				right = button(BUTTON_DPAD_RIGHT) || x > 0,
-				a = button(BUTTON_A),
-				b = button(BUTTON_B),
-			)
+	private fun read(sdl: Sdl, device: Device): Inputs {
+		val joystick = when (device) {
+			is Device.Controller -> sdl.SDL_GameControllerGetJoystick(device.handle)
+			is Device.Joystick -> device.handle
+		}
+		val raw = joystick?.let { handle ->
+			(0 until sdl.SDL_JoystickNumButtons(handle).coerceAtMost(64)).filter { sdl.SDL_JoystickGetButton(handle, it).toInt() != 0 }.toSet()
+		}.orEmpty()
+		if (raw.toList() != _status.value.rawButtons) _status.update { it.copy(rawButtons = raw.sorted()) }
+
+		val base = when (device) {
+			is Device.Controller -> {
+				fun button(id: Int) = sdl.SDL_GameControllerGetButton(device.handle, id).toInt() != 0
+				val (x, y) = stick(
+					sdl.SDL_GameControllerGetAxis(device.handle, AXIS_LEFTX),
+					sdl.SDL_GameControllerGetAxis(device.handle, AXIS_LEFTY),
+				)
+				Inputs(
+					up = button(BUTTON_DPAD_UP) || y < 0,
+					down = button(BUTTON_DPAD_DOWN) || y > 0,
+					left = button(BUTTON_DPAD_LEFT) || x < 0,
+					right = button(BUTTON_DPAD_RIGHT) || x > 0,
+					a = button(BUTTON_A),
+					b = button(BUTTON_B),
+					raw = raw,
+				)
+			}
+
+			is Device.Joystick -> {
+				val handle = device.handle
+				val hat = if (sdl.SDL_JoystickNumHats(handle) > 0) sdl.SDL_JoystickGetHat(handle, 0).toInt() else 0
+				val (x, y) = if (sdl.SDL_JoystickNumAxes(handle) >= 2) {
+					stick(sdl.SDL_JoystickGetAxis(handle, 0), sdl.SDL_JoystickGetAxis(handle, 1))
+				} else {
+					0f to 0f
+				}
+				Inputs(
+					up = hat and HAT_UP != 0 || y < 0,
+					down = hat and HAT_DOWN != 0 || y > 0,
+					left = hat and HAT_LEFT != 0 || x < 0,
+					right = hat and HAT_RIGHT != 0 || x > 0,
+					a = 0 in raw,
+					b = 1 in raw,
+					raw = raw,
+				)
+			}
 		}
 
-		is Device.Joystick -> {
-			val handle = device.handle
-			fun button(id: Int) = id < sdl.SDL_JoystickNumButtons(handle) && sdl.SDL_JoystickGetButton(handle, id).toInt() != 0
-			val hat = if (sdl.SDL_JoystickNumHats(handle) > 0) sdl.SDL_JoystickGetHat(handle, 0).toInt() else 0
-			val (x, y) = if (sdl.SDL_JoystickNumAxes(handle) >= 2) {
-				stick(sdl.SDL_JoystickGetAxis(handle, 0), sdl.SDL_JoystickGetAxis(handle, 1))
-			} else {
-				0f to 0f
-			}
-			Inputs(
-				up = hat and HAT_UP != 0 || y < 0,
-				down = hat and HAT_DOWN != 0 || y > 0,
-				left = hat and HAT_LEFT != 0 || x < 0,
-				right = hat and HAT_RIGHT != 0 || x > 0,
-				a = button(0),
-				b = button(1),
-			)
-		}
+		// Buttons the user assigned on the controller check screen win over the default layout
+		val assigned = mapping()
+		return base.copy(
+			a = assigned.activateButton?.let { it in raw } ?: base.a,
+			b = assigned.backButton?.let { it in raw } ?: base.b,
+		)
 	}
 
 	/** Dominant stick direction past the threshold, or 0. */

@@ -98,13 +98,24 @@ fun main() {
 			},
 		) {
 			// The default Steam Frame controls arrive as a gamepad, read it for the UI
-			val gamepad = remember { GamepadInput().also { it.start() } }
+			val gamepad = remember { GamepadInput(mapping = { configStore.current.controller }).also { it.start() } }
 			DisposableEffect(Unit) {
 				// Ask for keyboard focus too, for Steam Input layouts that send keys instead of gamepad input
 				KeyboardDiagnostics.install(window)
 				window.toFront()
 				window.requestFocus()
-				onDispose { gamepad.close() }
+				// Gamescope doesn't always hand keyboard focus to a Java window. Keep asking while we don't have it (and
+				// no other window of ours, like mpv's flat player, is in front) so key based Steam Input layouts work.
+				val focusNudger = javax.swing.Timer(2_000) {
+					if (!window.isFocused && !playback.isActive && window.isShowing) {
+						window.toFront()
+						window.requestFocus()
+					}
+				}.apply { start() }
+				onDispose {
+					focusNudger.stop()
+					gamepad.close()
+				}
 			}
 			App(deps, initialScreen, gamepad)
 		}

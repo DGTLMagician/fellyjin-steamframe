@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import androidx.compose.ui.draw.clip
 import app.fellyjin.input.KeyboardDiagnostics
+import app.fellyjin.data.ControllerMapping
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import app.fellyjin.BuildInfo
@@ -50,7 +51,7 @@ fun SettingsScreen(
 	) {
 		Text("Settings", style = MaterialTheme.typography.displayMedium)
 
-		ControllerCheck()
+		ControllerCheck(configStore)
 
 		Section("Playback") {
 			Choice("Play videos in", PlaybackMode.entries, config.playback.mode, { it.label }) { mode ->
@@ -133,7 +134,8 @@ fun SettingsScreen(
 
 /** Live view of what the app receives from the controller, to diagnose Steam Input setups. */
 @Composable
-private fun ControllerCheck() {
+private fun ControllerCheck(configStore: ConfigStore) {
+	val config by configStore.config.collectAsState()
 	val gamepad = LocalGamepad.current
 	val pad by (gamepad?.status ?: remember { kotlinx.coroutines.flow.MutableStateFlow(app.fellyjin.input.GamepadStatus("Not started")) }).collectAsState()
 	val keyboard by KeyboardDiagnostics.status.collectAsState()
@@ -156,9 +158,35 @@ private fun ControllerCheck() {
 			DiagnosticLine("Devices", pad.devices.ifEmpty { listOf("none found") }.joinToString("\n"), ok = pad.devices.isNotEmpty())
 			DiagnosticLine("Used for the UI", pad.active ?: "none", ok = pad.active != null)
 			DiagnosticLine("Gamepad input", pad.lastInput?.let { "$it (${pad.inputCount} presses)" } ?: "nothing yet", ok = pad.inputCount > 0)
+			DiagnosticLine("Raw buttons held", pad.rawButtons.ifEmpty { null }?.joinToString { "#$it" } ?: "none", ok = pad.rawButtons.isNotEmpty())
 			DiagnosticLine("Keyboard input", keyboard.lastKey?.let { "$it (${keyboard.keyCount} keys)" } ?: "nothing yet", ok = keyboard.keyCount > 0)
 			DiagnosticLine("Window has focus", if (keyboard.windowFocused) "yes" else "no", ok = keyboard.windowFocused)
 			DiagnosticLine("Log file", app.fellyjin.logFile?.toString() ?: "unavailable", ok = app.fellyjin.logFile != null)
+		}
+
+		// Assign buttons for controllers without a known layout (click these with the laser pointer)
+		Text("Buttons", style = MaterialTheme.typography.titleLarge)
+		Text(
+			when {
+				pad.learning -> "Press the button on your controller now…"
+				else -> "Select: ${config.controller.activateButton?.let { "button #$it" } ?: "default (A)"}  ·  " +
+					"Back: ${config.controller.backButton?.let { "button #$it" } ?: "default (B)"}"
+			},
+			style = MaterialTheme.typography.bodyLarge,
+			color = if (pad.learning) FellyjinColors.Mint else MaterialTheme.colorScheme.onSurfaceVariant,
+		)
+		FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+			BigButton("Set Select button", enabled = gamepad != null && !pad.learning, onClick = {
+				gamepad?.learnButton { button -> configStore.update { it.copy(controller = it.controller.copy(activateButton = button)) } }
+			})
+			BigButton("Set Back button", enabled = gamepad != null && !pad.learning, primary = false, onClick = {
+				gamepad?.learnButton { button -> configStore.update { it.copy(controller = it.controller.copy(backButton = button)) } }
+			})
+			if (pad.learning) {
+				BigButton("Cancel", primary = false, onClick = { gamepad?.cancelLearning() })
+			} else if (config.controller != ControllerMapping()) {
+				BigButton("Reset to default", primary = false, onClick = { configStore.update { it.copy(controller = ControllerMapping()) } })
+			}
 		}
 	}
 }

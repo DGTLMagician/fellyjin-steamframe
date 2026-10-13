@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -81,6 +84,11 @@ class Navigator(initial: Screen) {
 		if (stack.size <= 1) return false
 		stack.removeAt(stack.lastIndex)
 		return true
+	}
+
+	/** Back to the first screen (home) without losing it. */
+	fun home() {
+		while (stack.size > 1) stack.removeAt(stack.lastIndex)
 	}
 
 	fun replaceAll(screen: Screen) {
@@ -200,6 +208,19 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 					)
 				}
 			}
+			}
+
+			// Always reachable with the laser pointer, also when the controller buttons don't work
+			if (navigator.current !is Screen.Home && navigator.current !is Screen.ServerSelect && navigator.current !is Screen.Login) {
+				CompositionLocalProvider(LocalActivation provides activation) {
+					Row(
+						Modifier.align(Alignment.TopEnd).padding(top = 28.dp, end = 40.dp),
+						horizontalArrangement = Arrangement.spacedBy(14.dp),
+					) {
+						BigButton("Back", onClick = navigator::back, icon = Icons.AutoMirrored.Filled.ArrowBack, primary = false)
+						BigButton("Home", onClick = { navigator.home() }, icon = Icons.Default.Home, primary = false)
+					}
+				}
 			}
 
 			CompositionLocalProvider(LocalActivation provides activation) {

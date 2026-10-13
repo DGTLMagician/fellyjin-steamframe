@@ -24,6 +24,17 @@ data class AppConfig(
 	val server: ServerConfig? = null,
 	val playback: PlaybackSettings = PlaybackSettings(),
 	val cinema: CinemaSettings = CinemaSettings(),
+	val controller: ControllerMapping = ControllerMapping(),
+)
+
+/**
+ * Raw joystick button numbers chosen by the user on the controller check screen, for controllers SDL has no
+ * gamepad mapping for (like the Steam Frame controllers). Null uses the default layout.
+ */
+@Serializable
+data class ControllerMapping(
+	val activateButton: Int? = null,
+	val backButton: Int? = null,
 )
 
 @Serializable
