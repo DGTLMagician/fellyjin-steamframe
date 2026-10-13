@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Jellyfin
+GenericName=Media player
+Comment=Watch your Jellyfin library on a huge virtual cinema screen
+Exec=jellyfin-steamframe
+Icon=jellyfin-steamframe
+Categories=AudioVideo;Video;Player;
+Keywords=jellyfin;vr;cinema;movies;tv;
+StartupWMClass=org-jellyfin-steamframe-MainKt
