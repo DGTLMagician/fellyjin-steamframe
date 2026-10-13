@@ -32,6 +32,15 @@ import org.lwjgl.opengl.GLX13.glXGetVisualFromFBConfig
 import org.lwjgl.openxr.KHRCompositionLayerCylinder
 import org.lwjgl.openxr.FBDisplayRefreshRate
 import org.lwjgl.openxr.KHROpenGLEnable
+import org.lwjgl.openxr.MNDXEGLEnable
+import org.lwjgl.openxr.XrGraphicsBindingEGLMNDX
+import org.lwjgl.openxr.XrInstanceProperties
+import org.lwjgl.openxr.XrSystemProperties
+import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_CREATION_API
+import org.lwjgl.glfw.GLFW.GLFW_EGL_CONTEXT_API
+import org.lwjgl.glfw.GLFWNativeEGL.glfwGetEGLConfig
+import org.lwjgl.glfw.GLFWNativeEGL.glfwGetEGLContext
+import org.lwjgl.glfw.GLFWNativeEGL.glfwGetEGLDisplay
 import org.lwjgl.openxr.XR
 import org.lwjgl.openxr.XR10.*
 import org.lwjgl.openxr.XrAction
@@ -178,45 +187,71 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		NEXT_CHAPTER("next_chapter", "Next chapter"),
 	}
 
+	/** How the OpenGL context is created and handed to OpenXR. */
+	private enum class GlApi(val label: String) {
+		/** EGL context with XR_MNDX_egl_enable: no dependency on GLX through XWayland. */
+		EGL("OpenGL (EGL)"),
+
+		/** GLX context with the XR_KHR_opengl_enable Xlib binding. */
+		GLX("OpenGL (GLX)"),
+	}
+
+	private var glApi = GlApi.GLX
+
 	init {
 		if (Platform.get() != Platform.LINUX) throw XrException("OpenXR playback is only supported on Linux")
-		try {
-			initOpenGl()
-			initOpenXr()
-		} catch (err: Throwable) {
-			destroy()
-			throw err
+		ensureLoader()
+		val extensions = stackPush().use { availableExtensions(it) }
+		if (KHROpenGLEnable.XR_KHR_OPENGL_ENABLE_EXTENSION_NAME !in extensions) {
+			throw XrException("The OpenXR runtime does not support OpenGL (extensions: ${extensions.sorted().joinToString()})")
 		}
+
+		// Prefer EGL when the runtime offers it, fall back to GLX. FELLYJIN_XR_GL=glx|egl forces one.
+		val forced = appEnv("XR_GL")?.lowercase()
+		val candidates = buildList {
+			if (MNDXEGLEnable.XR_MNDX_EGL_ENABLE_EXTENSION_NAME in extensions && forced != "glx") add(GlApi.EGL)
+			if (forced != "egl") add(GlApi.GLX)
+		}
+		val errors = mutableListOf<String>()
+		for (api in candidates) {
+			try {
+				initOpenGl(api)
+				initOpenXr(api, extensions)
+				glApi = api
+				break
+			} catch (err: Throwable) {
+				logger.warn("VR start with ${api.label} failed", err)
+				errors += "${api.label}: ${err.message ?: err}"
+				destroy()
+			}
+		}
+		if (errors.size == candidates.size) throw XrException(errors.joinToString("; ").ifEmpty { "No usable OpenGL binding" })
+		VrDiagnostics.update { it.copy(state = VrStatus.State.RUNNING, reason = null, graphics = glApi.label) }
 	}
 
 	// region Initialization
 
-	private fun initOpenGl() {
+	private fun initOpenGl(api: GlApi) {
 		errorCallback = GLFWErrorCallback.create { error, description ->
 			logger.warn("GLFW error $error: ${GLFWErrorCallback.getDescription(description)}")
 		}
 		glfwSetErrorCallback(errorCallback)
 
-		// The OpenXR OpenGL binding on Linux needs GLX, so always use X11 (XWayland under gamescope)
+		// X11 (XWayland under gamescope) for both bindings: GLX needs it, and EGL on X11 is the best tested GLFW path
 		glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11)
 		if (!glfwInit()) throw XrException("Unable to initialize GLFW with X11, is DISPLAY set?")
 		glfwInitialized = true
 
 		glfwDefaultWindowHints()
 		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE)
+		if (api == GlApi.EGL) glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API)
 		window = glfwCreateWindow(16, 16, "Fellyjin VR", NULL, NULL)
-		if (window == NULL) throw XrException("Unable to create an OpenGL context")
+		if (window == NULL) throw XrException("Unable to create an ${api.label} context")
 		glfwMakeContextCurrent(window)
 		GL.createCapabilities()
 	}
 
-	private fun initOpenXr() = stackPush().use { stack ->
-		ensureLoader()
-
-		val extensions = availableExtensions(stack)
-		if (KHROpenGLEnable.XR_KHR_OPENGL_ENABLE_EXTENSION_NAME !in extensions) {
-			throw XrException("The OpenXR runtime does not support OpenGL")
-		}
+	private fun initOpenXr(api: GlApi, extensions: Set<String>) = stackPush().use { stack ->
 		supportsCylinder = KHRCompositionLayerCylinder.XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME in extensions
 		supportsRefreshRate = FBDisplayRefreshRate.XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME in extensions
 		supportsFrameController = FRAME_CONTROLLER_EXTENSION in extensions
@@ -224,6 +259,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 		val enabledExtensions = buildList {
 			add(KHROpenGLEnable.XR_KHR_OPENGL_ENABLE_EXTENSION_NAME)
+			if (api == GlApi.EGL) add(MNDXEGLEnable.XR_MNDX_EGL_ENABLE_EXTENSION_NAME)
 			if (supportsCylinder) add(KHRCompositionLayerCylinder.XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME)
 			if (supportsRefreshRate) add(FBDisplayRefreshRate.XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)
 			if (supportsFrameController) add(FRAME_CONTROLLER_EXTENSION)
@@ -249,6 +285,13 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		xrCheck(xrCreateInstance(createInfo, instancePtr), "xrCreateInstance")
 		val instance = XrInstance(instancePtr[0], createInfo)
 		this.instance = instance
+		val properties = XrInstanceProperties.calloc(stack).`type$Default`()
+		if (xrGetInstanceProperties(instance, properties) >= 0) {
+			val v = properties.runtimeVersion()
+			val runtime = "${properties.runtimeNameString()} ${v ushr 48}.${(v ushr 32) and 0xffff}.${v and 0xffffffffL}"
+			logger.info("OpenXR runtime: $runtime")
+			VrDiagnostics.update { it.copy(runtime = runtime) }
+		}
 
 		val systemPtr = stack.mallocLong(1)
 		val systemResult = xrGetSystem(
@@ -258,13 +301,24 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		)
 		if (systemResult < 0) throw XrException("No headset found (xrGetSystem: $systemResult), is SteamVR running?")
 		systemId = systemPtr[0]
+		val systemProperties = XrSystemProperties.calloc(stack).`type$Default`()
+		if (xrGetSystemProperties(instance, systemId, systemProperties) >= 0) {
+			VrDiagnostics.update { it.copy(system = systemProperties.systemNameString()) }
+		}
+		VrDiagnostics.update {
+			it.copy(features = listOfNotNull(
+				"curved screen".takeIf { supportsCylinder },
+				"refresh rate control".takeIf { supportsRefreshRate },
+				"Steam Frame controllers".takeIf { supportsFrameController },
+			))
+		}
 
 		// Mandatory before creating an OpenGL session
 		val requirements = XrGraphicsRequirementsOpenGLKHR.calloc(stack).`type$Default`()
 		xrCheck(KHROpenGLEnable.xrGetOpenGLGraphicsRequirementsKHR(instance, systemId, requirements), "xrGetOpenGLGraphicsRequirementsKHR")
 
 		blendMode = selectBlendMode(stack, instance)
-		createSession(stack, instance)
+		createSession(stack, instance, api)
 		createSpaces(stack)
 		createActions(stack, instance)
 		createTheater(instance)
@@ -296,6 +350,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		val best = available.max()
 		val result = FBDisplayRefreshRate.xrRequestDisplayRefreshRateFB(session, best)
 		logger.info("Display refresh rates $available, requested $best Hz (result $result)")
+		VrDiagnostics.update { it.copy(refreshRate = "${best.toInt()} Hz requested (available: ${available.joinToString { r -> r.toInt().toString() }})") }
 	}
 
 	private fun availableExtensions(stack: MemoryStack): Set<String> {
@@ -321,7 +376,32 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		}
 	}
 
-	private fun createSession(stack: MemoryStack, instance: XrInstance) {
+	private fun createSession(stack: MemoryStack, instance: XrInstance, api: GlApi) {
+		val binding = if (api == GlApi.EGL) eglBinding(stack) else glxBinding(stack)
+		val createInfo = XrSessionCreateInfo.calloc(stack)
+			.`type$Default`()
+			.next(binding)
+			.systemId(systemId)
+
+		val sessionPtr = stack.mallocPointer(1)
+		xrCheck(xrCreateSession(instance, createInfo, sessionPtr), "xrCreateSession")
+		session = XrSession(sessionPtr[0], instance)
+	}
+
+	private fun eglBinding(stack: MemoryStack): Long {
+		val config = stack.mallocPointer(1)
+		if (!glfwGetEGLConfig(window, config)) throw XrException("Unable to query the EGL config")
+		val getProcAddress = com.sun.jna.NativeLibrary.getInstance("EGL").getFunction("eglGetProcAddress")
+		return XrGraphicsBindingEGLMNDX.calloc(stack)
+			.`type$Default`()
+			.getProcAddress(com.sun.jna.Pointer.nativeValue(getProcAddress))
+			.display(glfwGetEGLDisplay())
+			.config(config[0])
+			.context(glfwGetEGLContext(window))
+			.address()
+	}
+
+	private fun glxBinding(stack: MemoryStack): Long {
 		val display = glfwGetX11Display()
 		val fbConfig = stack.mallocPointer(1)
 		if (!glfwGetGLXFBConfig(window, fbConfig)) throw XrException("Unable to query the GLX framebuffer config")
@@ -334,15 +414,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			.glxFBConfig(fbConfig[0])
 			.glxDrawable(glXGetCurrentDrawable())
 			.glxContext(glfwGetGLXContext(window))
-
-		val createInfo = XrSessionCreateInfo.calloc(stack)
-			.`type$Default`()
-			.next(binding.address())
-			.systemId(systemId)
-
-		val sessionPtr = stack.mallocPointer(1)
-		xrCheck(xrCreateSession(instance, createInfo, sessionPtr), "xrCreateSession")
-		session = XrSession(sessionPtr[0], instance)
+		return binding.address()
 	}
 
 	private fun createSpaces(stack: MemoryStack) {
@@ -525,7 +597,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	override fun attach(player: MpvPlayer) {
 		// mpv renders on its own thread and shared context, so a slow (4K) frame never stalls the 144 Hz frame loop
-		videoThread = VideoRenderThread(player, window, FLIP_Y)
+		videoThread = VideoRenderThread(player, window, FLIP_Y, egl = glApi == GlApi.EGL)
 	}
 
 	override fun onStreamLoaded(player: MpvPlayer, stream: ResolvedStream) {
@@ -628,6 +700,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		// Renamed in mpv 0.38, try both
 		if (!player.trySetProperty("display-fps-override", value)) player.trySetProperty("override-display-fps", value)
 		logger.info("Display running at %.1f Hz".format(hz))
+		if (!supportsRefreshRate) VrDiagnostics.update { it.copy(refreshRate = "%.0f Hz (set in SteamVR)".format(hz)) }
 	}
 
 	/** Dim the house lights while the movie plays and bring them up when paused, like a real theater. */
@@ -704,6 +777,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			state.interactionProfile().takeIf { it != NULL }?.let { pathToString(stack, instance, it) }
 		}
 		logger.info("Active controller profiles: $profiles")
+		VrDiagnostics.update { it.copy(controller = profiles.values.filterNotNull().distinct().joinToString().ifEmpty { "no bindings active" }) }
 		val active = profiles.values.filterNotNull().distinct()
 		pendingOsd = when {
 			active.isEmpty() -> "No controller bindings active: check SteamVR controller bindings"
@@ -884,7 +958,11 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		if (pressed(CinemaAction.CYCLE_SUBTITLES)) player.commandString("osd-msg cycle sub")
 		if (pressed(CinemaAction.CYCLE_AUDIO)) player.commandString("osd-msg cycle audio")
 		if (pressed(CinemaAction.RECENTER)) recenterPending = true
-		if (pressed(CinemaAction.INFO)) player.commandString("show-progress")
+		if (pressed(CinemaAction.INFO)) {
+			// Media info card for video fans: format, HDR, audio and how well playback keeps up
+			player.commandString("show-progress")
+			player.commandString(MEDIA_INFO_COMMAND)
+		}
 		if (pressed(CinemaAction.SEEK_BACK)) player.commandString("osd-msg-bar seek -10")
 		if (pressed(CinemaAction.SEEK_FORWARD)) player.commandString("osd-msg-bar seek 30")
 		if (pressed(CinemaAction.SCREEN_CLOSER)) distance = (distance * 0.9f).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
@@ -1015,3 +1093,9 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		}
 	}
 }
+
+/** mpv expands the ${...} properties when the text is shown. */
+internal const val MEDIA_INFO_COMMAND = "show-text \"\${media-title}\\n" +
+	"\${video-format} \${width}x\${height} at \${container-fps} fps   \${video-params/primaries} \${video-params/gamma}\\n" +
+	"\${audio-codec-name} \${audio-params/channel-count} channels\\n" +
+	"Decoder \${hwdec-current}   dropped frames \${frame-drop-count}   display \${display-fps} Hz\" 6000"

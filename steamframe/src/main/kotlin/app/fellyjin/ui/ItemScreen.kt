@@ -38,6 +38,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import coil3.compose.AsyncImage
 import androidx.compose.ui.unit.dp
 import org.jellyfin.sdk.model.api.BaseItemDto
+import org.jellyfin.sdk.model.api.AudioSpatialFormat
+import org.jellyfin.sdk.model.api.MediaStream
+import org.jellyfin.sdk.model.api.MediaStreamType
+import org.jellyfin.sdk.model.api.VideoRangeType
+import app.fellyjin.playback.TrackSelection
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.FlowRow
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.extensions.ticks
 import app.fellyjin.data.JellyfinRepository
@@ -174,6 +181,7 @@ private fun Header(
 				Text(item.name.orEmpty(), style = MaterialTheme.typography.displayMedium)
 			}
 			MetadataLine(item)
+			MediaBadges(item)
 			item.genres?.takeIf { it.isNotEmpty() }?.let {
 				Text(it.joinToString(" · "), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 			}
@@ -182,15 +190,16 @@ private fun Header(
 			}
 
 			Spacer(Modifier.height(8.dp))
+			var tracks by remember(item.id) { mutableStateOf(TrackSelection()) }
 			Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
 				when {
 					item.type in playableTypes -> {
 						val position = item.userData?.playbackPositionTicks?.takeIf { it > 0 }?.ticks
 						if (position != null) {
-							BigButton("Resume from ${formatDuration(position)}", onClick = { playback.play(item, resume = true) }, icon = Icons.Default.PlayArrow)
-							BigButton("Play from start", onClick = { playback.play(item, resume = false) }, icon = Icons.Default.Replay, primary = false)
+							BigButton("Resume from ${formatDuration(position)}", onClick = { playback.play(item, resume = true, tracks) }, icon = Icons.Default.PlayArrow)
+							BigButton("Play from start", onClick = { playback.play(item, resume = false, tracks) }, icon = Icons.Default.Replay, primary = false)
 						} else {
-							BigButton("Play", onClick = { playback.play(item, resume = false) }, icon = Icons.Default.PlayArrow)
+							BigButton("Play", onClick = { playback.play(item, resume = false, tracks) }, icon = Icons.Default.PlayArrow)
 						}
 					}
 
@@ -203,6 +212,7 @@ private fun Header(
 					}
 				}
 			}
+			if (item.type in playableTypes) TrackPicker(item, tracks) { tracks = it }
 		}
 	}
 }
@@ -217,11 +227,101 @@ private fun MetadataLine(item: BaseItemDto) {
 	)
 	Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
 		parts.forEach { Text(it, style = MaterialTheme.typography.titleLarge) }
-		if (item.video3dFormat != null) {
+	}
+}
+
+private fun BaseItemDto.streams(): List<MediaStream> =
+	mediaSources?.firstOrNull()?.mediaStreams ?: mediaStreams.orEmpty()
+
+/** Format badges video fans look for: resolution, HDR flavor, codec and immersive audio. */
+private fun mediaBadges(item: BaseItemDto): List<Pair<String, Boolean>> {
+	val streams = item.streams()
+	val video = streams.firstOrNull { it.type == MediaStreamType.VIDEO }
+	val audio = streams.filter { it.type == MediaStreamType.AUDIO }
+	return buildList {
+		val width = video?.width ?: 0
+		val height = video?.height ?: 0
+		when {
+			width >= 3200 || height >= 1800 -> add("4K" to true)
+			width >= 1800 || height >= 1000 -> add("1080p" to false)
+			width >= 1200 || height >= 700 -> add("720p" to false)
+		}
+		when (video?.videoRangeType) {
+			VideoRangeType.DOVI, VideoRangeType.DOVI_WITH_HDR10, VideoRangeType.DOVI_WITH_HLG, VideoRangeType.DOVI_WITH_SDR,
+			VideoRangeType.DOVI_WITH_EL, VideoRangeType.DOVI_WITH_HDR10_PLUS, VideoRangeType.DOVI_WITH_ELHDR10_PLUS -> add("Dolby Vision" to true)
+			VideoRangeType.HDR10_PLUS -> add("HDR10+" to true)
+			VideoRangeType.HDR10 -> add("HDR10" to true)
+			VideoRangeType.HLG -> add("HLG" to false)
+			else -> Unit
+		}
+		video?.codec?.lowercase()?.let { codec ->
+			when (codec) {
+				"hevc", "h265" -> add("HEVC" to false)
+				"av1" -> add("AV1" to false)
+				"h264" -> add("H.264" to false)
+			}
+		}
+		when {
+			audio.any { it.audioSpatialFormat == AudioSpatialFormat.DOLBY_ATMOS } -> add("Dolby Atmos" to true)
+			audio.any { it.audioSpatialFormat == AudioSpatialFormat.DTSX } -> add("DTS:X" to true)
+			audio.any { it.codec.equals("truehd", true) } -> add("TrueHD" to false)
+			audio.any { it.codec.equals("dts", true) && it.profile.orEmpty().contains("MA") } -> add("DTS-HD MA" to false)
+		}
+		audio.maxOfOrNull { it.channels ?: 0 }?.let { channels ->
+			when {
+				channels >= 8 -> add("7.1" to false)
+				channels >= 6 -> add("5.1" to false)
+			}
+		}
+		if (item.video3dFormat != null) add("3D" to true)
+	}
+}
+
+@Composable
+private fun MediaBadges(item: BaseItemDto) {
+	val badges = mediaBadges(item)
+	if (badges.isEmpty()) return
+	FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+		badges.forEach { (label, premium) ->
 			Box(
-				Modifier.clip(RoundedCornerShape(8.dp)).background(FellyjinColors.Brand).padding(horizontal = 12.dp, vertical = 2.dp)
+				Modifier
+					.clip(RoundedCornerShape(10.dp))
+					.then(
+						if (premium) Modifier.background(FellyjinColors.Brand)
+						else Modifier.border(1.5.dp, FellyjinColors.Outline, RoundedCornerShape(10.dp)).background(Color.White.copy(alpha = 0.05f))
+					)
+					.padding(horizontal = 14.dp, vertical = 4.dp)
 			) {
-				Text("3D", style = MaterialTheme.typography.titleMedium, color = Color.White)
+				Text(label, style = MaterialTheme.typography.labelLarge, color = Color.White)
+			}
+		}
+	}
+}
+
+/** Choose the audio track and subtitles before playing, like on a disc menu. */
+@Composable
+private fun TrackPicker(item: BaseItemDto, tracks: TrackSelection, onChange: (TrackSelection) -> Unit) {
+	val streams = item.streams()
+	val audio = streams.filter { it.type == MediaStreamType.AUDIO }
+	val subtitles = streams.filter { it.type == MediaStreamType.SUBTITLE }
+	fun label(stream: MediaStream) = (stream.displayTitle ?: stream.title ?: stream.language ?: "Track ${stream.index}").take(42)
+
+	if (audio.size > 1) {
+		Text("Audio", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+		FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+			audio.forEach { stream ->
+				val selected = tracks.audioStreamIndex == stream.index || (tracks.audioStreamIndex == null && stream.isDefault)
+				BigButton(label(stream), onClick = { onChange(tracks.copy(audioStreamIndex = stream.index)) }, primary = selected)
+			}
+		}
+	}
+	if (subtitles.isNotEmpty()) {
+		Text("Subtitles", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+		FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+			BigButton("Auto", onClick = { onChange(tracks.copy(subtitleStreamIndex = null)) }, primary = tracks.subtitleStreamIndex == null)
+			BigButton("Off", onClick = { onChange(tracks.copy(subtitleStreamIndex = TrackSelection.SUBTITLES_OFF)) }, primary = tracks.subtitleStreamIndex == TrackSelection.SUBTITLES_OFF)
+			subtitles.forEach { stream ->
+				BigButton(label(stream), onClick = { onChange(tracks.copy(subtitleStreamIndex = stream.index)) }, primary = tracks.subtitleStreamIndex == stream.index)
 			}
 		}
 	}

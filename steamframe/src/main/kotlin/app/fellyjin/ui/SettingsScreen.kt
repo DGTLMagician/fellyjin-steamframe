@@ -23,6 +23,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import androidx.compose.ui.draw.clip
 import app.fellyjin.input.KeyboardDiagnostics
+import app.fellyjin.playback.PlaybackController
+import app.fellyjin.vr.VrDiagnostics
+import app.fellyjin.vr.VrStatus
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Theaters
 import app.fellyjin.data.ControllerMapping
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -39,6 +44,7 @@ import app.fellyjin.vr.ScreenPreset
 fun SettingsScreen(
 	configStore: ConfigStore,
 	repository: JellyfinRepository,
+	playback: PlaybackController?,
 	onSignedOut: () -> Unit,
 	onChangeServer: () -> Unit,
 ) {
@@ -78,6 +84,7 @@ fun SettingsScreen(
 		}
 
 		Section("VR cinema") {
+			VrStatusPanel(playback)
 			Choice("Screen", ScreenPreset.entries, config.cinema.screen, { "${it.label} (${"%.3g".format(it.widthMeters)} m, ${it.horizontalFovDegrees}°)" }) { preset ->
 				configStore.update { it.copy(cinema = it.cinema.copy(screen = preset)) }
 			}
@@ -105,7 +112,7 @@ fun SettingsScreen(
 				configStore.update { it.copy(cinema = it.cinema.copy(verticalOffsetMeters = value)) }
 			}
 			Text(
-				"Steam Frame controller: A or trigger plays/pauses, B or View stops, Menu shows progress, " +
+				"Steam Frame controller: A or trigger plays/pauses, B or View stops, Menu shows media info (format, HDR, audio, dropped frames), " +
 					"D-pad/stick left/right seeks, up/down moves the screen, bumpers skip chapters, " +
 					"X cycles subtitles, Y cycles audio, stick click recenters.",
 				style = MaterialTheme.typography.bodyLarge,
@@ -129,6 +136,36 @@ fun SettingsScreen(
 			style = MaterialTheme.typography.bodyMedium,
 			color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
+	}
+}
+
+/** Result of the last VR start, with a preview button to (re)try without a movie. */
+@Composable
+private fun VrStatusPanel(playback: PlaybackController?) {
+	val vr by VrDiagnostics.status.collectAsState()
+	Column(
+		Modifier
+			.fillMaxWidth()
+			.clip(RoundedCornerShape(20.dp))
+			.background(FellyjinColors.Surface.copy(alpha = 0.85f))
+			.padding(24.dp),
+		verticalArrangement = Arrangement.spacedBy(8.dp),
+	) {
+		val state = when (vr.state) {
+			VrStatus.State.NOT_STARTED -> "Not started yet: press Preview cinema"
+			VrStatus.State.RUNNING -> "Working"
+			VrStatus.State.FAILED -> "Failed, videos play in a flat window"
+		}
+		DiagnosticLine("VR status", state, ok = vr.state == VrStatus.State.RUNNING)
+		vr.reason?.let { DiagnosticLine("Reason", it, ok = false) }
+		DiagnosticLine("Runtime", listOfNotNull(vr.runtime, vr.system).joinToString(" · ").ifEmpty { "unknown" }, ok = vr.runtime != null)
+		vr.graphics?.let { DiagnosticLine("Graphics", it, ok = true) }
+		if (vr.features.isNotEmpty()) DiagnosticLine("Features", vr.features.joinToString(), ok = true)
+		vr.refreshRate?.let { DiagnosticLine("Refresh rate", it, ok = true) }
+		vr.controller?.let { DiagnosticLine("Controller", it, ok = !it.startsWith("no ")) }
+	}
+	if (playback != null) {
+		BigButton("Preview cinema", onClick = playback::preview, icon = Icons.Default.Theaters)
 	}
 }
 

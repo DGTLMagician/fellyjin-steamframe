@@ -203,6 +203,7 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 					Screen.Settings -> SettingsScreen(
 						configStore = deps.configStore,
 						repository = deps.repository,
+						playback = deps.playback,
 						onSignedOut = { navigator.replaceAll(Screen.Login) },
 						onChangeServer = { navigator.replaceAll(Screen.ServerSelect) },
 					)
@@ -302,7 +303,7 @@ private fun PlaybackOverlay(state: PlaybackState, deps: AppDependencies) {
 			Text(
 				if (state.output == "VR cinema" && vr) {
 					"Watching on the cinema screen in your headset.\n" +
-						"A / trigger: play or pause · B / View: stop · Menu: progress\n" +
+						"A / trigger: play or pause · B / View: stop · Menu: media info\n" +
 						"D-pad or stick ←→: seek · D-pad or stick ↑↓: screen distance · Bumpers: chapters\n" +
 						"X: subtitles · Y: audio track · Stick click: recenter"
 				} else {

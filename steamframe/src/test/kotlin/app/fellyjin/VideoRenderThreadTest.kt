@@ -6,6 +6,8 @@ import app.fellyjin.mpv.MpvPlayer
 import app.fellyjin.vr.VideoRenderThread
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.lwjgl.BufferUtils
+import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_CREATION_API
+import org.lwjgl.glfw.GLFW.GLFW_EGL_CONTEXT_API
 import org.lwjgl.glfw.GLFW.GLFW_FALSE
 import org.lwjgl.glfw.GLFW.GLFW_PLATFORM
 import org.lwjgl.glfw.GLFW.GLFW_PLATFORM_X11
@@ -45,13 +47,19 @@ import kotlin.time.TimeSource
  */
 class VideoRenderThreadTest {
 	@Test
-	fun rendersFramesOnSharedContext() {
+	fun rendersFramesOnSharedGlxContext() = rendersFramesOnSharedContext(egl = false)
+
+	@Test
+	fun rendersFramesOnSharedEglContext() = rendersFramesOnSharedContext(egl = true)
+
+	private fun rendersFramesOnSharedContext(egl: Boolean) {
 		assumeTrue(Platform.get() == Platform.LINUX && System.getenv("DISPLAY") != null, "Needs Linux with an X display")
 		assumeTrue(LibMpv.isAvailable, "libmpv not installed")
 
 		glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11)
 		check(glfwInit())
 		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE)
+		if (egl) glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API)
 		val window = glfwCreateWindow(16, 16, "frame loop", NULL, NULL)
 		check(window != NULL)
 		glfwMakeContextCurrent(window)
@@ -61,7 +69,7 @@ class VideoRenderThreadTest {
 		val height = 240
 		val target = framebuffer(width, height)
 		val player = MpvPlayer(mapOf("vo" to "libmpv", "ao" to "null", "idle" to "yes", "terminal" to "no", "hwdec" to "no"))
-		val renderThread = VideoRenderThread(player, window, flipY = true)
+		val renderThread = VideoRenderThread(player, window, flipY = true, egl = egl)
 		var copies = 0
 		try {
 			player.load("av://lavfi:testsrc=duration=3:size=${width}x$height:rate=30", start = null, title = "test")
@@ -85,7 +93,7 @@ class VideoRenderThreadTest {
 			glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
 			val distinctColors = (0 until width * height).map { pixels.getInt(it * 4) }.toSet().size
 
-			println("Copied $copies frames, $distinctColors distinct colors in the last frame")
+			println("[${if (egl) "EGL" else "GLX"}] Copied $copies frames, $distinctColors distinct colors in the last frame")
 			// 3 seconds at 30 fps: most frames should arrive, and the test pattern is colorful
 			assertTrue(copies >= 60, "Only $copies frames were copied")
 			assertTrue(distinctColors > 20, "The copied frame looks empty ($distinctColors colors)")

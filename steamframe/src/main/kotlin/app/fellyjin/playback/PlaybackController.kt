@@ -28,7 +28,10 @@ import app.fellyjin.mpv.EndReason
 import app.fellyjin.mpv.LibMpv
 import app.fellyjin.mpv.MpvEvent
 import app.fellyjin.mpv.MpvPlayer
+import app.fellyjin.vr.VrDiagnostics
 import app.fellyjin.vr.XrCinemaOutput
+import org.jellyfin.sdk.model.api.PlayMethod
+import java.util.UUID
 import org.slf4j.LoggerFactory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -68,7 +71,13 @@ class PlaybackController(
 
 	val isActive: Boolean get() = thread?.isAlive == true
 
-	fun play(item: BaseItemDto, resume: Boolean) {
+	/**
+	 * Show the cinema with a colorful generated test video, without a server: lets users try the theater and screen
+	 * sizes, and shows right away whether VR starts on this device.
+	 */
+	fun preview() = play(PREVIEW_ITEM, resume = false)
+
+	fun play(item: BaseItemDto, resume: Boolean, tracks: TrackSelection = TrackSelection()) {
 		if (isActive) {
 			logger.warn("Playback already active, ignoring request for ${item.name}")
 			return
@@ -77,7 +86,7 @@ class PlaybackController(
 
 		stopRequested = false
 		_state.value = PlaybackState.Starting(item)
-		thread = Thread({ runPlayback(item, start) }, "fellyjin-playback").apply {
+		thread = Thread({ runPlayback(item, start, tracks) }, "fellyjin-playback").apply {
 			isDaemon = true
 			start()
 		}
@@ -92,7 +101,7 @@ class PlaybackController(
 		if (_state.value is PlaybackState.Failed) _state.value = PlaybackState.Idle
 	}
 
-	private fun runPlayback(item: BaseItemDto, start: Duration?) {
+	private fun runPlayback(item: BaseItemDto, start: Duration?, tracks: TrackSelection) {
 		if (!LibMpv.isAvailable) {
 			_state.value = PlaybackState.Failed("libmpv could not be loaded. Install mpv or use the bundled build.")
 			return
@@ -105,7 +114,8 @@ class PlaybackController(
 				XrCinemaOutput(settings.cinema)
 			} catch (err: Throwable) {
 				logger.warn("Unable to start the VR cinema, falling back to a flat window", err)
-				notice = "VR cinema unavailable (${err.message}), playing in a window"
+				VrDiagnostics.failed(err.message ?: err.toString())
+				notice = "VR cinema unavailable: ${err.message}. Playing in a window instead, see Settings → VR status."
 				FlatWindowOutput()
 			}
 
@@ -118,7 +128,8 @@ class PlaybackController(
 			activePlayer = player
 			output.attach(player)
 
-			var stream = runBlocking { resolver.resolve(item, start, settings.playback.maxBitrateMbps) }
+			var stream = if (item.id == PREVIEW_ITEM.id) previewStream()
+			else runBlocking { resolver.resolve(item, start, settings.playback.maxBitrateMbps, tracks) }
 			load(player, output, stream)
 			_state.value = PlaybackState.Playing(stream.item, output.name, notice)
 
@@ -142,7 +153,7 @@ class PlaybackController(
 					when (event) {
 						MpvEvent.FileLoaded -> {
 							if (settings.playback.showStats) player.commandString("script-binding stats/display-stats-toggle")
-							stream.externalSubtitles.forEach { player.addSubtitle(it.url, it.title, it.language) }
+							stream.externalSubtitles.forEach { player.addSubtitle(it.url, it.title, it.language, select = it.selected) }
 							output.onStreamLoaded(player, stream)
 							player.command("show-text", "\${media-title}", "3000")
 							session.start(player)
@@ -198,6 +209,13 @@ class PlaybackController(
 
 	private fun load(player: MpvPlayer, output: VideoOutput, stream: ResolvedStream) {
 		logger.info("Playing ${stream.item.name} using ${stream.playMethod} on ${output.name}")
+		// Track choices made on the detail page, mapped to mpv's per type track numbers
+		player.setProperty("aid", stream.mpvAudioTrack?.toString() ?: "auto")
+		player.setProperty("sid", when (val sid = stream.mpvSubtitleTrack) {
+			null -> "auto"
+			0 -> "no"
+			else -> sid.toString()
+		})
 		player.load(stream.url, stream.startPosition, displayTitle(stream.item))
 	}
 
@@ -249,6 +267,17 @@ class PlaybackController(
 
 		else -> item.name.orEmpty()
 	}
+
+	private fun previewStream() = ResolvedStream(
+		item = PREVIEW_ITEM,
+		url = PREVIEW_URL,
+		playSessionId = null,
+		mediaSourceId = null,
+		playMethod = PlayMethod.DIRECT_PLAY,
+		externalSubtitles = emptyList(),
+		startPosition = null,
+		stereoLayout = StereoLayout.MONO,
+	)
 
 	/** Reports the playback state of a single stream to the server. */
 	private inner class ReportingSession(private var stream: ResolvedStream) {
@@ -329,9 +358,30 @@ class PlaybackController(
 		}
 
 		private fun report(name: String, block: suspend () -> Unit) {
+			if (stream.item.id == PREVIEW_ITEM.id) return
 			reportScope.launch {
 				runCatching { block() }.onFailure { logger.warn("Failed to report playback $name", it) }
 			}
 		}
 	}
 }
+
+/** Audio and subtitle streams chosen on the detail page (Jellyfin stream indexes), null for the defaults. */
+data class TrackSelection(
+	val audioStreamIndex: Int? = null,
+	/** [SUBTITLES_OFF] turns subtitles off. */
+	val subtitleStreamIndex: Int? = null,
+) {
+	companion object {
+		const val SUBTITLES_OFF = -1
+	}
+}
+
+private val PREVIEW_ITEM = BaseItemDto(
+	id = UUID(0, 0x5f1e11),
+	name = "Cinema preview",
+	type = BaseItemKind.VIDEO,
+)
+
+// A colorful moving test pattern with a slowly cycling hue, so the screen visibly lights the theater
+internal const val PREVIEW_URL = "av://lavfi:testsrc2=size=1920x1080:rate=24:duration=600,hue=H=2*PI*t/12:s=1.4"

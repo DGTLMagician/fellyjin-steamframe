@@ -51,7 +51,7 @@ class ScreenSnapshotTest {
 	fun serverScreen() = snapshot("server") { ServerScreen(repository, onConnected = {}) }
 
 	@Test
-	fun settingsScreen() = snapshot("settings") { SettingsScreen(configStore, repository, onSignedOut = {}, onChangeServer = {}) }
+	fun settingsScreen() = snapshot("settings") { SettingsScreen(configStore, repository, playback = null, onSignedOut = {}, onChangeServer = {}) }
 
 	@Test
 	fun cards() = snapshot("cards") {

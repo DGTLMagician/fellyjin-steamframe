@@ -20,7 +20,7 @@ import org.jellyfin.sdk.model.api.Video3dFormat
 import org.jellyfin.sdk.model.extensions.inWholeTicks
 import kotlin.time.Duration
 
-data class ExternalSubtitle(val url: String, val title: String?, val language: String?)
+data class ExternalSubtitle(val url: String, val title: String?, val language: String?, val selected: Boolean = false)
 
 data class ResolvedStream(
 	val item: BaseItemDto,
@@ -31,6 +31,9 @@ data class ResolvedStream(
 	val externalSubtitles: List<ExternalSubtitle>,
 	val startPosition: Duration?,
 	val stereoLayout: StereoLayout,
+	/** mpv track numbers (1 based, per type) for the chosen streams; null for mpv's default, 0 for no subtitles. */
+	val mpvAudioTrack: Int? = null,
+	val mpvSubtitleTrack: Int? = null,
 )
 
 /** How a stereoscopic (3D) video is packed into a single frame. */
@@ -75,7 +78,7 @@ class StreamResolver(private val api: ApiClient) {
 			},
 	)
 
-	suspend fun resolve(item: BaseItemDto, startPosition: Duration?, maxBitrateMbps: Int): ResolvedStream {
+	suspend fun resolve(item: BaseItemDto, startPosition: Duration?, maxBitrateMbps: Int, tracks: TrackSelection = TrackSelection()): ResolvedStream {
 		val maxBitrate = maxBitrateMbps.coerceAtLeast(1) * 1_000_000
 		val response by api.mediaInfoApi.getPostedPlaybackInfo(
 			itemId = item.id,
@@ -83,6 +86,8 @@ class StreamResolver(private val api: ApiClient) {
 				userId = null,
 				maxStreamingBitrate = maxBitrate,
 				startTimeTicks = startPosition?.inWholeTicks,
+				audioStreamIndex = tracks.audioStreamIndex,
+				subtitleStreamIndex = tracks.subtitleStreamIndex,
 				deviceProfile = deviceProfile(maxBitrate),
 				enableDirectPlay = true,
 				enableDirectStream = true,
@@ -126,8 +131,21 @@ class StreamResolver(private val api: ApiClient) {
 				val deliveryUrl = stream.deliveryUrl ?: return@mapNotNull null
 				val subtitleUrl = if (stream.isExternalUrl == true) deliveryUrl
 				else api.createUrl(deliveryUrl, ignorePathParameters = true).withAccessToken()
-				ExternalSubtitle(subtitleUrl, stream.displayTitle ?: stream.title, stream.language)
+				ExternalSubtitle(subtitleUrl, stream.displayTitle ?: stream.title, stream.language, selected = stream.index == tracks.subtitleStreamIndex)
 			}
+
+		// mpv numbers tracks per type in container order, which is Jellyfin's stream order. External subtitles are added
+		// after loading (selected through ExternalSubtitle.selected). Transcodes only carry the chosen tracks.
+		val streams = source.mediaStreams.orEmpty().filter { !it.isExternal }.sortedBy { it.index }
+		fun mpvTrack(type: MediaStreamType, index: Int?): Int? {
+			if (index == null || method == PlayMethod.TRANSCODE) return null
+			val position = streams.filter { it.type == type }.indexOfFirst { it.index == index }
+			return if (position >= 0) position + 1 else null
+		}
+		val subtitleTrack = when (tracks.subtitleStreamIndex) {
+			TrackSelection.SUBTITLES_OFF -> 0
+			else -> mpvTrack(MediaStreamType.SUBTITLE, tracks.subtitleStreamIndex)
+		}
 
 		return ResolvedStream(
 			item = item,
@@ -145,6 +163,8 @@ class StreamResolver(private val api: ApiClient) {
 				// MVC needs a decoder mpv doesn't have, play the base view
 				Video3dFormat.MVC, null -> StereoLayout.MONO
 			},
+			mpvAudioTrack = mpvTrack(MediaStreamType.AUDIO, tracks.audioStreamIndex),
+			mpvSubtitleTrack = subtitleTrack,
 		)
 	}
 

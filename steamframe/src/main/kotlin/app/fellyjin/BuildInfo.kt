@@ -3,7 +3,7 @@ package app.fellyjin
 object BuildInfo {
 	const val APP_NAME = "Fellyjin"
 	const val CLIENT_NAME = "Fellyjin Steam Frame"
-	const val VERSION = "0.4.1"
+	const val VERSION = "0.5.0"
 }
 
 /** Read a `FELLYJIN_*` environment variable, falling back to the `JELLYFIN_*` name used before the rename. */

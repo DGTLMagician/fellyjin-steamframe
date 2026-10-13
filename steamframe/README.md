@@ -52,6 +52,23 @@ src/main/kotlin/app/fellyjin/
    few seconds when the movie starts and come back up when you pause. Switch to *Black void* or *Passthrough* in
    the settings.
 
+### For video fans
+
+- **Format badges** on the detail page: 4K, Dolby Vision / HDR10 / HDR10+, HEVC / AV1, Dolby Atmos / DTS:X /
+  TrueHD / DTS-HD MA, 5.1 / 7.1 and 3D.
+- **Choose audio and subtitles before playing**, like a disc menu. The choice is passed to the server (for
+  transcodes) and mapped to mpv's tracks for direct play.
+- **Media info card in VR** (Menu button): codec, resolution, frame rate, color primaries and transfer, audio
+  format and channels, the active hardware decoder, dropped frames and the display rate.
+- **Preview cinema** (Settings → VR cinema) opens the theater with a colorful test video, without a server, to try
+  screen sizes and check that VR works.
+
+### Starting VR
+
+The VR cinema prefers an EGL context (`XR_MNDX_egl_enable`) and falls back to GLX
+(`XR_KHR_opengl_enable` Xlib binding). `FELLYJIN_XR_GL=egl|glx` forces one. If VR can't start, playback continues
+in a window, and Settings → VR status shows the exact reason, the runtime and the active features.
+
 ### Smoothness at 144 Hz
 
 - The app asks for the headset's highest refresh rate through `XR_FB_display_refresh_rate` when SteamVR exposes it.

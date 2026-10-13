@@ -80,9 +80,10 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	}
 
 	/** Run a command in input.conf syntax, which supports prefixes like `osd-msg-bar`. */
-	fun commandString(command: String) {
+	fun commandString(command: String): Boolean {
 		val result = mpv.mpv_command_string(handle, command)
 		if (result < 0) logger.warn("mpv command $command failed: ${mpv.mpv_error_string(result)}")
+		return result >= 0
 	}
 
 	fun setProperty(name: String, value: String) {
@@ -122,9 +123,9 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		command("loadfile", url, "replace")
 	}
 
-	fun addSubtitle(url: String, title: String?, language: String?) {
-		// Add without selecting, mpv chooses the track based on the slang/sid options
-		command("sub-add", url, "auto", title ?: "", language ?: "")
+	fun addSubtitle(url: String, title: String?, language: String?, select: Boolean = false) {
+		// "auto" adds without selecting (mpv picks based on slang/sid), "select" makes it the active subtitle
+		command("sub-add", url, if (select) "select" else "auto", title ?: "", language ?: "")
 	}
 
 	/** Poll a single event, returns null when the queue is empty after waiting [timeoutSeconds]. */

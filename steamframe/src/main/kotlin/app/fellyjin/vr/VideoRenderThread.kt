@@ -1,6 +1,8 @@
 package app.fellyjin.vr
 
 import app.fellyjin.mpv.MpvPlayer
+import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_CREATION_API
+import org.lwjgl.glfw.GLFW.GLFW_EGL_CONTEXT_API
 import org.lwjgl.glfw.GLFW.GLFW_FALSE
 import org.lwjgl.glfw.GLFW.GLFW_VISIBLE
 import org.lwjgl.glfw.GLFW.glfwCreateWindow
@@ -60,6 +62,8 @@ class VideoRenderThread(
 	private val player: MpvPlayer,
 	sharedWindow: Long,
 	private val flipY: Boolean,
+	/** The frame loop context is EGL: a shared context must be created with the same API. */
+	egl: Boolean = false,
 ) : AutoCloseable {
 	private val logger = LoggerFactory.getLogger(VideoRenderThread::class.java)
 
@@ -77,6 +81,7 @@ class VideoRenderThread(
 	}
 
 	private val window: Long
+	private val egl: Boolean
 	private val buffers = Array(3) { Buffer() }
 	private val lock = Any()
 	private var published = -1
@@ -106,6 +111,8 @@ class VideoRenderThread(
 	init {
 		glfwDefaultWindowHints()
 		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE)
+		if (egl) glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API)
+		this.egl = egl
 		window = glfwCreateWindow(16, 16, "Fellyjin video", NULL, sharedWindow)
 		if (window == NULL) throw XrException("Unable to create the shared video OpenGL context")
 
@@ -172,7 +179,8 @@ class VideoRenderThread(
 			GL.createCapabilities()
 			player.createGlRenderContext(
 				procAddress = { glfwGetProcAddress(it) },
-				x11Display = glfwGetX11Display(),
+				// Only used by mpv for VA-API interop with GLX, not needed with EGL (and copy-back hwdec)
+				x11Display = if (egl) null else glfwGetX11Display(),
 				onUpdate = { wake.release() },
 			)
 		} catch (err: Throwable) {
