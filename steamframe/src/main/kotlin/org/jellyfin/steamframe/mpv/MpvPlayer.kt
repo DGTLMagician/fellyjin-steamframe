@@ -59,9 +59,11 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		mpv.mpv_create() ?: error("mpv_create failed (LC_NUMERIC is ${CLocale.numeric()})")
 	}
 
+	@Volatile
 	private var renderContext: Pointer? = null
-	// Kept as a field so the JNA callback is not garbage collected while mpv may call it
+	// Kept as fields so the JNA callbacks are not garbage collected while mpv may call them
 	private var getProcAddress: LibMpv.GetProcAddress? = null
+	private var updateCallback: LibMpv.UpdateCallback? = null
 	private var closed = false
 
 	init {
@@ -158,7 +160,7 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	/**
 	 * Create an OpenGL render context, requires `vo=libmpv` and a current OpenGL context on the calling thread.
 	 */
-	fun createGlRenderContext(procAddress: (String) -> Long, x11Display: Long?) {
+	fun createGlRenderContext(procAddress: (String) -> Long, x11Display: Long?, onUpdate: (() -> Unit)? = null) {
 		check(renderContext == null) { "Render context already created" }
 
 		val callback = LibMpv.GetProcAddress { _, name -> procAddress(name).takeIf { it != 0L }?.let(::Pointer) }
@@ -182,6 +184,12 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		val result = PointerByReference()
 		check(mpv.mpv_render_context_create(result, handle, params), "mpv_render_context_create")
 		renderContext = result.value
+		if (onUpdate != null) {
+			// Only signals the render thread, mpv forbids calling its API from inside this callback
+			val update = LibMpv.UpdateCallback { onUpdate() }
+			updateCallback = update
+			mpv.mpv_render_context_set_update_callback(result.value, update, null)
+		}
 		// The params only hold raw addresses, keep the backing memory alive until mpv copied them
 		Reference.reachabilityFence(apiType)
 		Reference.reachabilityFence(initParams)
@@ -198,8 +206,11 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	private val flipY = intPointer(1)
 	private val blockForTargetTime = intPointer(0)
 
-	/** Render the current frame into the OpenGL framebuffer [fbo] of the given size. */
-	fun render(fbo: Int, width: Int, height: Int, flip: Boolean) {
+	/**
+	 * Render the current frame into the OpenGL framebuffer [fbo] of the given size. With [blockForTargetTime] mpv
+	 * waits until the frame is due, which gives the most even frame pacing on a dedicated render thread.
+	 */
+	fun render(fbo: Int, width: Int, height: Int, flip: Boolean, blockForTargetTime: Boolean = false) {
 		val ctx = renderContext ?: return
 		// struct mpv_opengl_fbo { int fbo; int w; int h; int internal_format; }
 		fboStruct.setInt(0, fbo)
@@ -207,12 +218,12 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		fboStruct.setInt(8, height)
 		fboStruct.setInt(12, 0)
 		flipY.setInt(0, if (flip) 1 else 0)
+		this.blockForTargetTime.setInt(0, if (blockForTargetTime) 1 else 0)
 
 		val params = renderParams(
 			LibMpv.RENDER_PARAM_OPENGL_FBO to fboStruct,
 			LibMpv.RENDER_PARAM_FLIP_Y to flipY,
-			// The OpenXR frame loop does the pacing, never let mpv block it
-			LibMpv.RENDER_PARAM_BLOCK_FOR_TARGET_TIME to blockForTargetTime,
+			LibMpv.RENDER_PARAM_BLOCK_FOR_TARGET_TIME to this.blockForTargetTime,
 		)
 		mpv.mpv_render_context_render(ctx, params)
 	}
@@ -223,8 +234,12 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 
 	/** Free the render context, must be called on the OpenGL thread before the context is destroyed. */
 	fun freeRenderContext() {
-		renderContext?.let(mpv::mpv_render_context_free)
+		renderContext?.let {
+			mpv.mpv_render_context_set_update_callback(it, null, null)
+			mpv.mpv_render_context_free(it)
+		}
 		renderContext = null
+		updateCallback = null
 	}
 
 	override fun close() {

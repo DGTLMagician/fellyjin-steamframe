@@ -33,10 +33,16 @@ interface LibMpv : Library {
 	fun mpv_wait_event(ctx: Pointer, timeout: Double): Pointer
 
 	fun mpv_render_context_create(res: PointerByReference, mpv: Pointer, params: Pointer): Int
+	fun mpv_render_context_set_update_callback(ctx: Pointer, callback: UpdateCallback?, callbackCtx: Pointer?)
 	fun mpv_render_context_update(ctx: Pointer): Long
 	fun mpv_render_context_render(ctx: Pointer, params: Pointer): Int
 	fun mpv_render_context_report_swap(ctx: Pointer)
 	fun mpv_render_context_free(ctx: Pointer)
+
+	/** `void (*mpv_render_update_fn)(void *cb_ctx)`, called from an mpv thread when a new frame can be rendered. */
+	fun interface UpdateCallback : Callback {
+		fun invoke(ctx: Pointer?)
+	}
 
 	/** `void *(*get_proc_address)(void *ctx, const char *name)` from render_gl.h. */
 	fun interface GetProcAddress : Callback {

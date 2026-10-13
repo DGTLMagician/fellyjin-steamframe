@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import org.jellyfin.steamframe.BuildInfo
 import org.jellyfin.steamframe.data.ConfigStore
 import org.jellyfin.steamframe.data.JellyfinRepository
+import org.jellyfin.steamframe.data.HWDEC_AUTO
 import org.jellyfin.steamframe.data.PlaybackMode
 import org.jellyfin.steamframe.vr.CinemaEnvironment
 import org.jellyfin.steamframe.vr.PictureQuality
@@ -52,14 +53,17 @@ fun SettingsScreen(
 			Choice("Maximum streaming bitrate", listOf(10, 20, 40, 80, 120, 200), config.playback.maxBitrateMbps, { "$it Mbps" }) { value ->
 				configStore.update { it.copy(playback = it.playback.copy(maxBitrateMbps = value)) }
 			}
-			Choice("Hardware decoding", listOf("auto-safe", "auto-copy-safe", "no"), config.playback.hwdec, {
+			Choice("Hardware decoding", listOf(HWDEC_AUTO, "auto-copy-safe", "no"), config.playback.hwdec.let { if (it == "auto-safe") HWDEC_AUTO else it }, {
 				when (it) {
-					"auto-safe" -> "Automatic"
-					"auto-copy-safe" -> "Automatic (copy back)"
-					else -> "Off"
+					HWDEC_AUTO -> "Steam Frame (V4L2)"
+					"auto-copy-safe" -> "Generic"
+					else -> "Off (software)"
 				}
 			}) { value ->
 				configStore.update { it.copy(playback = it.playback.copy(hwdec = value)) }
+			}
+			Choice("Performance overlay", listOf(false, true), config.playback.showStats, { if (it) "On" else "Off" }) { value ->
+				configStore.update { it.copy(playback = it.playback.copy(showStats = value)) }
 			}
 		}
 

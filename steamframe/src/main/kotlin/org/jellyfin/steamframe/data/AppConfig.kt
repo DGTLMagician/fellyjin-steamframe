@@ -47,10 +47,26 @@ enum class PlaybackMode(val label: String) {
 @Serializable
 data class PlaybackSettings(
 	val mode: PlaybackMode = PlaybackMode.VR_CINEMA,
-	val hwdec: String = "auto-safe",
+	/** [HWDEC_AUTO] picks the Steam Frame's hardware decoder, otherwise a raw mpv hwdec value. */
+	val hwdec: String = HWDEC_AUTO,
+	/** Show mpv's statistics overlay (frame timings, dropped frames, decoder) during playback. */
+	val showStats: Boolean = false,
 	val autoPlayNextEpisode: Boolean = true,
 	val maxBitrateMbps: Int = 120,
 )
+
+const val HWDEC_AUTO = "auto"
+
+/**
+ * mpv hwdec value for the Steam Frame. The Snapdragon's video decoder is exposed through V4L2 M2M, which mpv's
+ * auto-safe mode never tries. The copy variant works with any video output, including the OpenGL render API used by
+ * the VR cinema, and frees the CPU from decoding 4K HEVC/AV1. Other GPUs (desktop testing) fall back to auto.
+ */
+fun resolveHwdec(setting: String): String = when (setting) {
+	// "auto-safe" was the default of earlier versions, upgrade it as well
+	HWDEC_AUTO, "auto-safe" -> "v4l2m2m-copy,auto-copy-safe"
+	else -> setting
+}
 
 /**
  * Stores the configuration as JSON in `$XDG_CONFIG_HOME/jellyfin-steamframe/config.json`.

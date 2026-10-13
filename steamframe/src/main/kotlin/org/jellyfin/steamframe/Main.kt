@@ -1,6 +1,7 @@
 package org.jellyfin.steamframe
 
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -69,12 +70,15 @@ fun main() {
 				}
 			},
 		) {
-			// The default Steam Frame controls arrive as a gamepad, translate them for the UI
+			// The default Steam Frame controls arrive as a gamepad, read it for the UI
+			val gamepad = remember { GamepadInput().also { it.start() } }
 			DisposableEffect(Unit) {
-				val gamepad = GamepadInput(window).also { it.start() }
+				// Ask for keyboard focus too, for Steam Input layouts that send keys instead of gamepad input
+				window.toFront()
+				window.requestFocus()
 				onDispose { gamepad.close() }
 			}
-			App(deps, initialScreen)
+			App(deps, initialScreen, gamepad)
 		}
 	}
 }

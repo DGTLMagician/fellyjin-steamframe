@@ -35,7 +35,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -67,6 +69,31 @@ class BackdropState {
 val LocalBackdrop = staticCompositionLocalOf { BackdropState() }
 
 /**
+ * Remembers the click action of the focused element, so the controller's A button can activate it directly
+ * (without relying on AWT keyboard focus, which gamescope does not always give the window).
+ */
+class ActivationState {
+	var focused: (() -> Unit)? = null
+}
+
+val LocalActivation = staticCompositionLocalOf { ActivationState() }
+
+/** Register [onClick] as the controller activation target while [focused] is true. */
+@Composable
+fun RegisterActivation(focused: Boolean, onClick: () -> Unit) {
+	val activation = LocalActivation.current
+	val currentOnClick by rememberUpdatedState(onClick)
+	val action = remember { { currentOnClick() } }
+	LaunchedEffect(focused) {
+		if (focused) activation.focused = action
+		else if (activation.focused === action) activation.focused = null
+	}
+	DisposableEffect(Unit) {
+		onDispose { if (activation.focused === action) activation.focused = null }
+	}
+}
+
+/**
  * Focus and hover aware card: works with the keyboard/gamepad (focus) as well as the VR laser pointer (hover).
  * Highlighted cards scale up with a spring and get a soft brand colored glow.
  */
@@ -90,6 +117,7 @@ fun FocusCard(
 	LaunchedEffect(highlighted) {
 		if (highlighted) onHighlight?.invoke()
 	}
+	RegisterActivation(focused, onClick)
 
 	Box(
 		modifier = modifier
@@ -226,6 +254,7 @@ fun BigButton(
 	val interactionSource = remember { MutableInteractionSource() }
 	val focused by interactionSource.collectIsFocusedAsState()
 	val scale by animateFloatAsState(if (focused) 1.06f else 1f)
+	RegisterActivation(focused && enabled, onClick)
 	val content: @Composable () -> Unit = {
 		Row(verticalAlignment = Alignment.CenterVertically) {
 			icon?.let {

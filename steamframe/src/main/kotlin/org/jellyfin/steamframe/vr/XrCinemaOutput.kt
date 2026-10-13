@@ -56,6 +56,7 @@ import org.lwjgl.openxr.XrGraphicsBindingOpenGLXlibKHR
 import org.lwjgl.openxr.XrGraphicsRequirementsOpenGLKHR
 import org.lwjgl.openxr.XrInstance
 import org.lwjgl.openxr.XrInstanceCreateInfo
+import org.lwjgl.openxr.XrInteractionProfileState
 import org.lwjgl.openxr.XrInteractionProfileSuggestedBinding
 import org.lwjgl.openxr.XrPosef
 import org.lwjgl.openxr.XrReferenceSpaceCreateInfo
@@ -135,6 +136,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	// Theater environment
 	private var theater: TheaterRenderer? = null
+	private var videoThread: VideoRenderThread? = null
+	private var pendingOsd: String? = null
 	private val room = RoomState()
 	private var paused = true
 	private var lastPausePoll = TimeSource.Monotonic.markNow()
@@ -519,7 +522,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	}
 
 	override fun attach(player: MpvPlayer) {
-		player.createGlRenderContext(procAddress = { glfwGetProcAddress(it) }, x11Display = glfwGetX11Display())
+		// mpv renders on its own thread and shared context, so a slow (4K) frame never stalls the 144 Hz frame loop
+		videoThread = VideoRenderThread(player, window, FLIP_Y)
 	}
 
 	override fun onStreamLoaded(player: MpvPlayer, stream: ResolvedStream) {
@@ -539,6 +543,23 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 		current?.close()
 		video = XrSwapchainImages.create(requireNotNull(session), width, height, "video")
+		videoThread?.setTargetSize(width, height)
+		tuneForResolution(player, videoWidth)
+	}
+
+	/**
+	 * 4K sources are sharp and rarely band, but debanding, high quality chroma scaling and HDR peak detection at 4K
+	 * cost the Steam Frame's GPU several milliseconds per frame. Use the cheap paths for them, the full chain for
+	 * everything below.
+	 */
+	private fun tuneForResolution(player: MpvPlayer, videoWidth: Int) {
+		val uhd = videoWidth >= 2560
+		val high = settings.quality == PictureQuality.HIGH && !uhd
+		player.trySetProperty("deband", if (high) "yes" else "no")
+		player.trySetProperty("cscale", if (high) "spline36" else "bilinear")
+		player.trySetProperty("scale", if (high) "spline36" else "bilinear")
+		player.trySetProperty("hdr-compute-peak", if (uhd) "no" else "auto")
+		logger.info("Video ${videoWidth}px wide, ${if (high) "high quality" else "fast"} render path")
 	}
 
 	override fun frame(player: MpvPlayer): Boolean {
@@ -563,8 +584,11 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			if (recenterPending) recenter(stack, displayTime)
 			updateHouseLights(player, displayTime)
 
-			val newFrame = player.renderUpdateAvailable()
-			if (newFrame && video != null) renderVideo(stack, player)
+			if (video != null && videoThread?.hasNewFrame == true) copyVideo(stack)
+			pendingOsd?.let {
+				player.command("show-text", it, "4000")
+				pendingOsd = null
+			}
 
 			val layers = stack.mallocPointer(3)
 			if (frameState.shouldRender()) {
@@ -584,7 +608,6 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				),
 				"xrEndFrame",
 			)
-			if (newFrame) player.reportSwap()
 		}
 
 		return !exitRequested
@@ -640,8 +663,9 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	}
 
 	override fun close(player: MpvPlayer) {
-		// The render context uses the OpenGL context, free it before the context is gone
-		player.freeRenderContext()
+		// Stops the render thread, which frees mpv's render context on its own OpenGL context
+		videoThread?.close()
+		videoThread = null
 		destroy()
 	}
 
@@ -659,12 +683,45 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 			when (buffer.type()) {
 				XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING -> exitRequested = true
+				XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED -> reportInteractionProfiles(stack)
 				XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED -> {
 					val state = XrEventDataSessionStateChanged.create(buffer.address()).state()
 					onSessionStateChanged(stack, state)
 				}
 			}
 		}
+	}
+
+	/** Log and show which controller profile SteamVR picked, so missing bindings are visible in the headset. */
+	private fun reportInteractionProfiles(stack: MemoryStack) {
+		val instance = instance ?: return
+		val session = session ?: return
+		val profiles = listOf("left", "right").associateWith { hand ->
+			val state = XrInteractionProfileState.calloc(stack).`type$Default`()
+			if (xrGetCurrentInteractionProfile(session, path(stack, instance, "/user/hand/$hand"), state) < 0) return@associateWith null
+			state.interactionProfile().takeIf { it != NULL }?.let { pathToString(stack, instance, it) }
+		}
+		logger.info("Active controller profiles: $profiles")
+		val active = profiles.values.filterNotNull().distinct()
+		pendingOsd = when {
+			active.isEmpty() -> "No controller bindings active: check SteamVR controller bindings"
+			else -> "Controller: " + active.joinToString { profile ->
+				when {
+					profile.endsWith("frame_controller_valve") -> "Steam Frame"
+					profile.endsWith("touch_controller") -> "Touch (emulated)"
+					profile.endsWith("index_controller") -> "Index"
+					else -> profile.substringAfterLast('/')
+				}
+			}
+		}
+	}
+
+	private fun pathToString(stack: MemoryStack, instance: XrInstance, path: Long): String {
+		val count = stack.mallocInt(1)
+		if (xrPathToString(instance, path, count, null) < 0) return path.toString()
+		val buffer = stack.malloc(count[0])
+		if (xrPathToString(instance, path, count, buffer) < 0) return path.toString()
+		return org.lwjgl.system.MemoryUtil.memUTF8(buffer, count[0] - 1)
 	}
 
 	private fun onSessionStateChanged(stack: MemoryStack, state: Int) {
@@ -696,17 +753,18 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		}
 	}
 
-	private fun renderVideo(stack: MemoryStack, player: MpvPlayer) {
+	/** Copy the newest frame from the render thread into the video swapchain (a GPU blit, well under 1 ms). */
+	private fun copyVideo(stack: MemoryStack) {
 		val video = video ?: return
+		val thread = videoThread ?: return
 		video.render(stack) { fbo ->
-			// OpenXR OpenGL images have their origin in the bottom left corner, mpv needs to flip to match
-			player.render(fbo, video.width, video.height, flip = FLIP_Y)
-			// Light the theater with this frame (left eye only for 3D)
-			theater?.let {
-				val rect = eyeRects(video.width, video.height).first()
-				it.captureScreen(fbo, rect.x, rect.y, rect.width, rect.height)
+			thread.copyLatest(fbo, video.width, video.height) { source, width, height ->
+				// Light the theater with this frame (left eye only for 3D)
+				theater?.let {
+					val rect = eyeRects(width, height).first()
+					it.captureScreen(source, rect.x, rect.y, rect.width, rect.height)
+				}
 			}
-			glFlush()
 		}
 	}
 

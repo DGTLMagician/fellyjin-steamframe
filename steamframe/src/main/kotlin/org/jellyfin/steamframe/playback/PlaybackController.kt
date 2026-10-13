@@ -22,6 +22,7 @@ import org.jellyfin.sdk.model.extensions.ticks
 import org.jellyfin.steamframe.data.ConfigStore
 import org.jellyfin.steamframe.data.JellyfinRepository
 import org.jellyfin.steamframe.data.PlaybackMode
+import org.jellyfin.steamframe.data.resolveHwdec
 import org.jellyfin.steamframe.mpv.EndReason
 import org.jellyfin.steamframe.mpv.LibMpv
 import org.jellyfin.steamframe.mpv.MpvEvent
@@ -139,6 +140,7 @@ class PlaybackController(
 					timeout = 0.0
 					when (event) {
 						MpvEvent.FileLoaded -> {
+							if (settings.playback.showStats) player.commandString("script-binding stats/display-stats-toggle")
 							stream.externalSubtitles.forEach { player.addSubtitle(it.url, it.title, it.language) }
 							output.onStreamLoaded(player, stream)
 							player.command("show-text", "\${media-title}", "3000")
@@ -217,10 +219,17 @@ class PlaybackController(
 			"idle" to "yes",
 			"keep-open" to "no",
 			"ytdl" to "no",
-			"hwdec" to playback.hwdec,
+			"hwdec" to resolveHwdec(playback.hwdec),
+			// Decode with all cores when software decoding is needed, and skip strict but slow decoder checks
+			"vd-lavc-threads" to "0",
+			"vd-lavc-fast" to "yes",
+			// 4K remuxes run at 60-100 Mbps: buffer generously so Wi-Fi dips don't stall playback
 			"cache" to "yes",
-			"demuxer-max-bytes" to "512MiB",
-			"demuxer-max-back-bytes" to "128MiB",
+			"cache-secs" to "60",
+			"demuxer-readahead-secs" to "30",
+			"demuxer-max-bytes" to "1GiB",
+			"demuxer-max-back-bytes" to "256MiB",
+			"network-timeout" to "30",
 			"user-agent" to "Jellyfin Steam Frame",
 			"osd-bar-h" to "2.5",
 			"osd-font-size" to "42",

@@ -56,8 +56,14 @@ src/main/kotlin/org/jellyfin/steamframe/
 - The app asks for the headset's highest refresh rate through `XR_FB_display_refresh_rate` when SteamVR exposes it.
   Otherwise the rate follows the SteamVR setting. The real display period from `xrWaitFrame` is passed to mpv, and
   24 fps film divides 144 Hz evenly (6 refreshes per frame), so pacing stays even.
-- mpv only renders when a new video frame is due (24-60 times per second). Every other display frame just
-  resubmits the layers, and the compositor handles head motion.
+- mpv renders on its own thread with a shared OpenGL context, into a ring of three textures guarded by GPU fences.
+  The frame loop only blits the newest finished frame into the swapchain (well under 1 ms), so a heavy 4K frame
+  can never make the headset miss a 144 Hz refresh. Every other display frame just resubmits the layers.
+- 4K is decoded by the Snapdragon's hardware decoder through V4L2 M2M (`v4l2m2m-copy`, falling back to software).
+  For 4K sources the app switches to the cheap render path: no debanding, bilinear chroma, no HDR peak detection.
+  These matter little at 4K and cost the most GPU time. Generous buffering (60 s, 1 GiB) absorbs Wi-Fi dips at 4K
+  remux bitrates.
+- Settings → Performance overlay shows mpv's statistics (decoder, frame timings, dropped frames) on the screen.
 - The theater is one analytic full-screen shader pass per eye at half resolution, with no meshes and no texture
   reads in the fragment shader. The light zones come from a 64×36 mipmapped copy of the frame, blitted on the GPU
   without a CPU readback.
@@ -97,7 +103,9 @@ Bindings for Index, Touch and the simple controller are included too, and SteamV
 
 The library UI is a normal window on SteamOS' virtual screen. The default Steam Frame controls reach it as a
 gamepad, which the app reads through SDL2 (bundled with libmpv): D-pad or left stick move the focus, A selects and
-B goes back. The laser pointer works as a mouse. For login, use Quick Connect so you don't have to type a password
+B goes back. This is handled inside Compose, so it works even when gamescope doesn't give the Java window keyboard
+focus. A message appears when a controller is detected. In VR, the headset briefly shows which controller profile
+SteamVR selected (e.g. "Controller: Steam Frame"). The laser pointer works as a mouse. For login, use Quick Connect so you don't have to type a password
 in VR.
 
 ## Building

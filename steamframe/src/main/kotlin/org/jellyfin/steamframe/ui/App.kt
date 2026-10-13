@@ -37,7 +37,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import coil3.ImageLoader
+import kotlinx.coroutines.delay
+import org.jellyfin.steamframe.input.GamepadEvent
+import org.jellyfin.steamframe.input.GamepadInput
+import org.jellyfin.steamframe.input.UiAction
 import coil3.compose.AsyncImage
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
@@ -90,7 +96,7 @@ class AppDependencies(
 )
 
 @Composable
-fun App(deps: AppDependencies, initialScreen: Screen) {
+fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = null) {
 	setSingletonImageLoaderFactory { context ->
 		ImageLoader.Builder(context)
 			.crossfade(true)
@@ -102,10 +108,42 @@ fun App(deps: AppDependencies, initialScreen: Screen) {
 
 	val navigator = remember { Navigator(initialScreen) }
 	val backdrop = remember { BackdropState() }
+	val activation = remember { ActivationState() }
+	var controllerToast by remember { mutableStateOf<String?>(null) }
 	val focusManager = LocalFocusManager.current
 	val playbackState by deps.playback.state.collectAsState()
 
 	fun openItem(item: BaseItemDto) = navigator.push(item.toScreen())
+
+	fun back() {
+		if (deps.playback.isActive) deps.playback.stop()
+		else if (deps.playback.state.value is PlaybackState.Failed) deps.playback.dismissError()
+		else navigator.back()
+	}
+
+	// Controller input, handled in Compose so it works even when gamescope never gives the window keyboard focus
+	LaunchedEffect(gamepad) {
+		gamepad?.events?.collect { event ->
+			when (event) {
+				is GamepadEvent.Connected -> controllerToast = "Controller connected: ${event.name}"
+				GamepadEvent.Disconnected -> controllerToast = "Controller disconnected"
+				is GamepadEvent.Action -> when (event.action) {
+					UiAction.UP -> focusManager.moveFocusOrEnter(FocusDirection.Up)
+					UiAction.DOWN -> focusManager.moveFocusOrEnter(FocusDirection.Down)
+					UiAction.LEFT -> focusManager.moveFocusOrEnter(FocusDirection.Left)
+					UiAction.RIGHT -> focusManager.moveFocusOrEnter(FocusDirection.Right)
+					UiAction.ACTIVATE -> activation.focused?.invoke() ?: focusManager.moveFocus(FocusDirection.Next)
+					UiAction.BACK -> back()
+				}
+			}
+		}
+	}
+	LaunchedEffect(controllerToast) {
+		if (controllerToast != null) {
+			delay(3_000)
+			controllerToast = null
+		}
+	}
 
 	JellyfinTheme {
 		Box(
@@ -121,7 +159,10 @@ fun App(deps: AppDependencies, initialScreen: Screen) {
 						Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
 						Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
 						Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-						Key.Escape, Key.Backspace -> navigator.back()
+						Key.Escape, Key.Backspace -> {
+							back()
+							true
+						}
 						else -> false
 					}
 				}
@@ -131,7 +172,7 @@ fun App(deps: AppDependencies, initialScreen: Screen) {
 			LaunchedEffect(navigator.current) { if (!browsing) backdrop.url = null }
 			if (browsing) BackdropLayer(backdrop.url)
 
-			CompositionLocalProvider(LocalBackdrop provides backdrop) {
+			CompositionLocalProvider(LocalBackdrop provides backdrop, LocalActivation provides activation) {
 			Crossfade(navigator.current) { screen ->
 				when (screen) {
 					Screen.ServerSelect -> ServerScreen(deps.repository, onConnected = { navigator.replaceAll(Screen.Login) })
@@ -160,7 +201,21 @@ fun App(deps: AppDependencies, initialScreen: Screen) {
 			}
 			}
 
-			PlaybackOverlay(playbackState, deps)
+			CompositionLocalProvider(LocalActivation provides activation) {
+				PlaybackOverlay(playbackState, deps)
+			}
+
+			controllerToast?.let { message ->
+				Box(
+					Modifier
+						.align(Alignment.BottomCenter)
+						.padding(bottom = 48.dp)
+						.background(JellyfinColors.SurfaceHigh, androidx.compose.foundation.shape.RoundedCornerShape(50))
+						.padding(horizontal = 32.dp, vertical = 16.dp)
+				) {
+					Text(message, style = MaterialTheme.typography.titleMedium)
+				}
+			}
 		}
 	}
 }
@@ -188,6 +243,11 @@ private fun imageCacheDir(): Path {
 	val base = System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotBlank() }?.let(Path::of)
 		?: Path.of(System.getProperty("user.home"), ".cache")
 	return base.resolve("jellyfin-steamframe").resolve("images")
+}
+
+/** Move focus; when nothing is focused yet (first press) focus the first item instead. */
+private fun androidx.compose.ui.focus.FocusManager.moveFocusOrEnter(direction: FocusDirection) {
+	if (!moveFocus(direction)) moveFocus(FocusDirection.Next)
 }
 
 private fun BaseItemDto.toScreen(): Screen = when {
