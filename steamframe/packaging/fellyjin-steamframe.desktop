@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fellyjin
+GenericName=Media player
+Comment=Your Jellyfin library on a huge virtual cinema screen
+Exec=fellyjin-steamframe
+Icon=fellyjin-steamframe
+Categories=AudioVideo;Video;Player;
+Keywords=fellyjin;jellyfin;vr;cinema;movies;tv;
+StartupWMClass=app-fellyjin-MainKt

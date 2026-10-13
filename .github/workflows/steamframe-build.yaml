@@ -1,4 +1,4 @@
-name: Steam Frame / Build
+name: Fellyjin / Build
 
 on:
   push:
@@ -53,7 +53,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: jellyfin-steamframe-linux-${{ matrix.arch }}
+          name: fellyjin-steamframe-linux-${{ matrix.arch }}
           retention-days: 14
           if-no-files-found: error
           path: |

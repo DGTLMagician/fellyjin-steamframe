@@ -1,4 +1,4 @@
-rootProject.name = "jellyfin-steamframe"
+rootProject.name = "fellyjin-steamframe"
 
 pluginManagement {
 	repositories {

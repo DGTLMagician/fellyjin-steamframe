@@ -1,0 +1,112 @@
+package app.fellyjin
+
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import app.fellyjin.data.ConfigStore
+import app.fellyjin.data.JellyfinRepository
+import app.fellyjin.input.GamepadInput
+import app.fellyjin.playback.PlaybackController
+import app.fellyjin.ui.App
+import app.fellyjin.ui.AppDependencies
+import app.fellyjin.ui.Screen
+import app.fellyjin.input.KeyboardDiagnostics
+import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import javax.imageio.ImageIO
+
+/** Gamescope (SteamOS gaming mode, including on the Steam Frame) wants a single fullscreen window. */
+private fun runningInGamescope(): Boolean =
+	System.getenv("GAMESCOPE_WAYLAND_DISPLAY") != null ||
+		System.getenv("XDG_CURRENT_DESKTOP").equals("gamescope", ignoreCase = true) ||
+		System.getenv("SteamGamepadUI") != null
+
+private val appIcon by lazy {
+	val stream = requireNotNull(object {}.javaClass.getResourceAsStream("/icon.png")) { "icon.png missing" }
+	BitmapPainter(stream.use { ImageIO.read(it) }.toComposeImageBitmap())
+}
+
+/**
+ * Always log to `~/.local/state/fellyjin-steamframe/fellyjin.log` (previous run in `fellyjin.log.1`), so problems on
+ * the Steam Frame can be diagnosed without changing Steam's launch options. Must run before the first logger is made.
+ */
+private fun setupLogging(): Path? = runCatching {
+	val base = System.getenv("XDG_STATE_HOME")?.takeIf { it.isNotBlank() }?.let(Path::of)
+		?: Path.of(System.getProperty("user.home"), ".local", "state")
+	val dir = base.resolve("fellyjin-steamframe").also(Files::createDirectories)
+	val log = dir.resolve("fellyjin.log")
+	if (Files.exists(log)) Files.move(log, dir.resolve("fellyjin.log.1"), StandardCopyOption.REPLACE_EXISTING)
+	System.setProperty("org.slf4j.simpleLogger.logFile", log.toString())
+	System.setProperty("org.slf4j.simpleLogger.showDateTime", "true")
+	System.setProperty("org.slf4j.simpleLogger.dateTimeFormat", "HH:mm:ss.SSS")
+	log
+}.getOrNull()
+
+/** Location of the log file of this run, shown on the controller check screen. */
+var logFile: Path? = null
+	private set
+
+fun main() {
+	logFile = setupLogging()
+	LoggerFactory.getLogger("Fellyjin").info("${BuildInfo.CLIENT_NAME} ${BuildInfo.VERSION} starting")
+	val configStore = ConfigStore()
+	val repository = JellyfinRepository(configStore)
+	val playback = PlaybackController(repository, configStore)
+	val deps = AppDependencies(configStore, repository, playback)
+
+	val initialScreen = when {
+		repository.restoreSession() -> Screen.Home
+		configStore.current.server != null -> Screen.Login
+		else -> Screen.ServerSelect
+	}
+
+	application {
+		val windowState = rememberWindowState(
+			placement = if (runningInGamescope() || appEnv("FULLSCREEN") == "1") WindowPlacement.Fullscreen else WindowPlacement.Maximized,
+			width = 1920.dp,
+			height = 1080.dp,
+		)
+
+		Window(
+			onCloseRequest = {
+				playback.stop()
+				exitApplication()
+			},
+			state = windowState,
+			title = BuildInfo.APP_NAME,
+			icon = appIcon,
+			onPreviewKeyEvent = { event ->
+				// F11 toggles fullscreen
+				if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
+					windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Maximized else WindowPlacement.Fullscreen
+					true
+				} else {
+					false
+				}
+			},
+		) {
+			// The default Steam Frame controls arrive as a gamepad, read it for the UI
+			val gamepad = remember { GamepadInput().also { it.start() } }
+			DisposableEffect(Unit) {
+				// Ask for keyboard focus too, for Steam Input layouts that send keys instead of gamepad input
+				KeyboardDiagnostics.install(window)
+				window.toFront()
+				window.requestFocus()
+				onDispose { gamepad.close() }
+			}
+			App(deps, initialScreen, gamepad)
+		}
+	}
+}

@@ -1,12 +1,13 @@
-# Jellyfin for Steam Frame
+# Fellyjin for Steam Frame
 
 > [!IMPORTANT]
-> Unofficial personal fork, not affiliated with the Jellyfin Project or Valve. Built largely with
-> [Claude Code](https://claude.com/claude-code). See the [main README](../README.md) for details.
+> Fellyjin is an unofficial personal project, a client for Jellyfin servers. It is not affiliated with the Jellyfin
+> Project or Valve, and was built largely with [Claude Code](https://claude.com/claude-code). See the
+> [main README](../README.md) for details.
 
-A native ARM64 Linux port of Jellyfin for Android TV, built for SteamOS on the Valve Steam Frame. Movies and shows
-play on a huge virtual cinema screen through OpenXR (SteamVR). If OpenXR is not available, playback falls back to a
-fullscreen window.
+Fellyjin is a native ARM64 Linux client for Jellyfin servers, built for SteamOS on the Valve Steam Frame and forked
+from Jellyfin for Android TV. Movies and shows play on a huge virtual cinema screen through OpenXR (SteamVR). If
+OpenXR is not available, playback falls back to a fullscreen window.
 
 This lives next to the Android app in the same repository, but it is a separate Gradle build: the Android app depends
 on Android-only APIs (Leanback, Media3, Android services), so the UI and the player were rewritten for the desktop JVM.
@@ -24,7 +25,7 @@ the Android app.
 | Input     | D-pad remote                       | Steam Input (keyboard/mouse/laser) + OpenXR actions    |
 
 ```
-src/main/kotlin/org/jellyfin/steamframe/
+src/main/kotlin/app/fellyjin/
 ├── Main.kt                  Window setup, fullscreen under gamescope
 ├── data/                    Config (JSON in ~/.config), Jellyfin SDK repository
 ├── ui/                      Compose screens: server, login (Quick Connect), home, library, details, settings
@@ -45,8 +46,8 @@ src/main/kotlin/org/jellyfin/steamframe/
    each eye gets its own layer with its half of the frame.
 5. mpv's OSD (seek bar, track names) and subtitles are rendered into the video frame, so they appear on the big
    screen.
-6. Around the screen, a movie theater is rendered as a projection layer: velvet curtains, fabric walls, aisle step
-   lights and a projection booth. It is lit by the film itself. Three light zones are sampled from every video frame
+6. Around the screen, a movie theater is rendered as a projection layer: violet velvet curtains, fabric walls, mint aisle
+   step lights and a projection booth. It is lit by the film itself. Three light zones are sampled from every video frame
    on the GPU, so a sunset warms the left wall and a night scene leaves the room dark. The house lights dim over a
    few seconds when the movie starts and come back up when you pause. Switch to *Black void* or *Passthrough* in
    the settings.
@@ -118,7 +119,7 @@ steamframe/packaging/bundle-libmpv.sh    # copies libmpv + dependencies into the
 ./gradlew -p steamframe test packageTarball
 ```
 
-The result is `steamframe/build/dist/jellyfin-steamframe-<version>-linux-arm64.tar.gz`. It includes a jlinked Java
+The result is `steamframe/build/dist/fellyjin-steamframe-<version>-linux-arm64.tar.gz`. It includes a jlinked Java
 runtime, so SteamOS needs nothing extra. The [Steam Frame / Build](../.github/workflows/steamframe-build.yaml)
 workflow does this on GitHub's ARM64 runners and uploads the tarball as an artifact.
 
@@ -130,24 +131,27 @@ For development on any OS with a JDK (and libmpv installed for playback):
 
 ## Installing on the Steam Frame
 
-1. Switch to Desktop Mode and extract the tarball, then run `./jellyfin-steamframe/install.sh`. This installs into
-   `~/.local/share/jellyfin-steamframe`, since the root filesystem is read-only.
+1. Switch to Desktop Mode and extract the tarball, then run `./fellyjin-steamframe/install.sh`. This installs into
+   `~/.local/share/fellyjin-steamframe`, since the root filesystem is read-only.
 2. In Steam, choose *Add a Non-Steam Game* and select *Jellyfin*.
 3. Launch it from Gaming Mode. Playback starts SteamVR's OpenXR session automatically.
 
 ## Configuration
 
-Settings are stored in `~/.config/jellyfin-steamframe/config.json`, which holds the access token and is readable only by
-the current user. mpv can be tuned with `~/.config/jellyfin-steamframe/mpv/mpv.conf`.
+The old `JELLYFIN_*` variable names still work. The settings folder of builds from before the rename is moved over
+automatically.
+
+Settings are stored in `~/.config/fellyjin-steamframe/config.json`, which holds the access token and is readable only by
+the current user. mpv can be tuned with `~/.config/fellyjin-steamframe/mpv/mpv.conf`.
 
 Environment variables:
 
 | Variable                 | Purpose                                                       |
 |--------------------------|---------------------------------------------------------------|
-| `JELLYFIN_MPV_LIBRARY`   | Path to a specific `libmpv.so`                                |
-| `JELLYFIN_OPENXR_LOADER` | Path to a specific `libopenxr_loader.so` (LWJGL bundles one)  |
-| `JELLYFIN_XR_FLIP_Y=0`   | Use if a runtime shows the video upside down                  |
-| `JELLYFIN_FULLSCREEN=1`  | Start fullscreen outside gamescope (toggle with F11)          |
+| `FELLYJIN_MPV_LIBRARY`   | Path to a specific `libmpv.so`                                |
+| `FELLYJIN_OPENXR_LOADER` | Path to a specific `libopenxr_loader.so` (LWJGL bundles one)  |
+| `FELLYJIN_XR_FLIP_Y=0`   | Use if a runtime shows the video upside down                  |
+| `FELLYJIN_FULLSCREEN=1`  | Start fullscreen outside gamescope (toggle with F11)          |
 
 ## Status and known gaps
 
@@ -155,7 +159,7 @@ Environment variables:
   test runs on Mesa under Xvfb in CI. The libmpv binding test
   runs wherever libmpv is installed, including the CI workflow. The OpenXR path is written against the OpenXR 1.0 spec and SteamVR's OpenGL/Xlib binding,
   but has not run on Steam Frame hardware yet. Expect to tune it on the device: the swapchain format, the
-  orientation (`JELLYFIN_XR_FLIP_Y`) and the controller bindings for the Steam Frame's own controllers.
+  orientation (`FELLYJIN_XR_FLIP_Y`) and the controller bindings for the Steam Frame's own controllers.
 - If SteamVR on the Frame turns out to support only Vulkan sessions, the mpv OpenGL output needs an OpenGL→Vulkan
   interop step (`GL_EXT_memory_object`). The flat window fallback keeps playback working in the meantime.
 - Not ported yet from the Android app: music playback, Live TV, search, SyncPlay, trickplay previews, media segment

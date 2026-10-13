@@ -7,8 +7,8 @@ plugins {
 	id("org.jetbrains.compose") version "1.12.1"
 }
 
-group = "org.jellyfin.steamframe"
-version = "0.3.0"
+group = "app.fellyjin"
+version = "0.4.0"
 
 java {
 	sourceCompatibility = JavaVersion.VERSION_21
@@ -61,17 +61,17 @@ dependencies {
 
 compose.desktop {
 	application {
-		mainClass = "org.jellyfin.steamframe.MainKt"
+		mainClass = "app.fellyjin.MainKt"
 		jvmArgs += listOf("-Dsun.java2d.uiScale.enabled=true", "--enable-native-access=ALL-UNNAMED")
 
 		nativeDistributions {
 			targetFormats(TargetFormat.Deb)
 			// Filled by packaging/bundle-libmpv.sh, ends up in the compose.application.resources.dir
 			appResourcesRootDir.set(layout.buildDirectory.dir("native-bundle"))
-			packageName = "jellyfin-steamframe"
+			packageName = "fellyjin-steamframe"
 			packageVersion = project.version.toString()
-			description = "Jellyfin client for Steam Frame with a virtual cinema screen"
-			vendor = "Jellyfin"
+			description = "Fellyjin: a Jellyfin client for the Steam Frame with a virtual cinema screen"
+			vendor = "Fellyjin"
 			licenseFile.set(rootProject.file("../LICENSE"))
 			modules("java.net.http", "jdk.unsupported", "java.naming")
 
@@ -89,7 +89,7 @@ compose.desktop {
 	}
 }
 
-// Portable tarball for SteamOS: extract anywhere (e.g. ~/Applications) and add bin/jellyfin-steamframe to Steam
+// Portable tarball for SteamOS: extract anywhere (e.g. ~/Applications) and add bin/fellyjin-steamframe to Steam
 tasks.register<Tar>("packageTarball") {
 	group = "distribution"
 	description = "Packages the distributable app with its bundled runtime as a tar.gz"
@@ -98,15 +98,15 @@ tasks.register<Tar>("packageTarball") {
 		"aarch64", "arm64" -> "arm64"
 		else -> "x86_64"
 	}
-	archiveFileName.set("jellyfin-steamframe-${project.version}-linux-$arch.tar.gz")
+	archiveFileName.set("fellyjin-steamframe-${project.version}-linux-$arch.tar.gz")
 	destinationDirectory.set(layout.buildDirectory.dir("dist"))
 	compression = Compression.GZIP
 	// Gradle normalizes archive permissions by default, keep the executable bits of the launcher and runtime
 	useFileSystemPermissions()
 	from(layout.buildDirectory.dir("compose/binaries/main/app"))
 	from("packaging") {
-		include("jellyfin-steamframe.desktop", "icon.png", "install.sh")
-		into("jellyfin-steamframe")
+		include("fellyjin-steamframe.desktop", "icon.png", "install.sh")
+		into("fellyjin-steamframe")
 	}
 }
 
