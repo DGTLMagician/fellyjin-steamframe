@@ -121,7 +121,10 @@ class VideoRenderThread(
 			priority = Thread.MAX_PRIORITY - 1
 			start()
 		}
-		started.await(10, TimeUnit.SECONDS)
+		if (!started.await(10, TimeUnit.SECONDS)) {
+			close()
+			throw XrException("The video render thread did not start in time")
+		}
 		startError?.let { close(); throw it }
 	}
 
@@ -261,8 +264,14 @@ class VideoRenderThread(
 	override fun close() {
 		running = false
 		wake.release()
-		thread.join(2_000)
+		thread.join(5_000)
 		glDeleteFramebuffers(readFramebuffer)
+		if (thread.isAlive) {
+			// Still inside mpv (a stalled decoder): destroying its context now would crash. Leak it instead, and
+			// MpvPlayer.close() leaves that mpv instance alone as long as its render context exists.
+			logger.error("Video render thread did not stop, leaving its OpenGL context alive")
+			return
+		}
 		glfwDestroyWindow(window)
 	}
 }

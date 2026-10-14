@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "app.fellyjin"
-version = "0.7.0"
+version = "0.8.0"
 
 java {
 	sourceCompatibility = JavaVersion.VERSION_21
@@ -62,7 +62,16 @@ dependencies {
 compose.desktop {
 	application {
 		mainClass = "app.fellyjin.MainKt"
-		jvmArgs += listOf("-Dsun.java2d.uiScale.enabled=true", "--enable-native-access=ALL-UNNAMED")
+		jvmArgs += listOf(
+			"-Dsun.java2d.uiScale.enabled=true",
+			"--enable-native-access=ALL-UNNAMED",
+			// Generational ZGC: sub-millisecond pauses, so garbage collection never makes the VR frame loop miss a
+			// refresh (the default G1 young collections stop every thread for a few milliseconds)
+			"-XX:+UseZGC",
+			"-XX:+ZGenerational",
+			// Return unused heap to SteamOS instead of holding on to it
+			"-XX:ZUncommitDelay=30",
+		)
 
 		nativeDistributions {
 			targetFormats(TargetFormat.Deb)

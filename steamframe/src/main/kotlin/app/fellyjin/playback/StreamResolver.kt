@@ -4,7 +4,13 @@ import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.extensions.mediaInfoApi
 import org.jellyfin.sdk.api.client.extensions.videoApi
 import org.jellyfin.sdk.model.api.BaseItemDto
+import org.jellyfin.sdk.model.api.CodecProfile
+import org.jellyfin.sdk.model.api.CodecType
 import org.jellyfin.sdk.model.api.DeviceProfile
+import org.jellyfin.sdk.model.api.ProfileCondition
+import org.jellyfin.sdk.model.api.ProfileConditionType
+import org.jellyfin.sdk.model.api.ProfileConditionValue
+import org.jellyfin.sdk.model.api.VideoRangeType
 import org.jellyfin.sdk.model.api.DirectPlayProfile
 import org.jellyfin.sdk.model.api.DlnaProfileType
 import org.jellyfin.sdk.model.api.EncodingContext
@@ -68,7 +74,23 @@ class StreamResolver(private val api: ApiClient) {
 			),
 		),
 		containerProfiles = emptyList(),
-		codecProfiles = emptyList(),
+		codecProfiles = listOf(
+			// Dolby Vision profile 5 has no HDR10/SDR base layer: its colors live in Dolby's IPT space and need the RPU
+			// reshaping mpv's OpenGL render path can't do, so they show up green and purple. Let the server convert
+			// those (with tone mapping). Profiles 7 and 8 carry an HDR10/HLG/SDR base layer that plays correctly.
+			CodecProfile(
+				type = CodecType.VIDEO,
+				conditions = listOf(
+					ProfileCondition(
+						condition = ProfileConditionType.EQUALS_ANY,
+						property = ProfileConditionValue.VIDEO_RANGE_TYPE,
+						value = DIRECT_PLAY_RANGE_TYPES,
+						isRequired = false,
+					),
+				),
+				applyConditions = emptyList(),
+			),
+		),
 		subtitleProfiles = listOf("srt", "subrip", "ass", "ssa", "vtt", "webvtt", "pgssub", "dvdsub", "dvbsub", "sub", "smi", "ttml")
 			.flatMap { format ->
 				listOf(
@@ -138,7 +160,8 @@ class StreamResolver(private val api: ApiClient) {
 		// after loading (selected through ExternalSubtitle.selected). Transcodes only carry the chosen tracks.
 		val streams = source.mediaStreams.orEmpty().filter { !it.isExternal }.sortedBy { it.index }
 		fun mpvTrack(type: MediaStreamType, index: Int?): Int? {
-			if (index == null || method == PlayMethod.TRANSCODE) return null
+			// Remuxes and transcodes (HLS) only carry the chosen tracks, mpv's numbering doesn't match the source there
+			if (index == null || method != PlayMethod.DIRECT_PLAY) return null
 			val position = streams.filter { it.type == type }.indexOfFirst { it.index == index }
 			return if (position >= 0) position + 1 else null
 		}
@@ -166,6 +189,22 @@ class StreamResolver(private val api: ApiClient) {
 			mpvAudioTrack = mpvTrack(MediaStreamType.AUDIO, tracks.audioStreamIndex),
 			mpvSubtitleTrack = subtitleTrack,
 		)
+	}
+
+	private companion object {
+		/** Every video range type except plain Dolby Vision (profile 5) and invalid Dolby Vision metadata. */
+		val DIRECT_PLAY_RANGE_TYPES = listOf(
+			VideoRangeType.SDR,
+			VideoRangeType.HDR10,
+			VideoRangeType.HDR10_PLUS,
+			VideoRangeType.HLG,
+			VideoRangeType.DOVI_WITH_HDR10,
+			VideoRangeType.DOVI_WITH_HLG,
+			VideoRangeType.DOVI_WITH_SDR,
+			VideoRangeType.DOVI_WITH_EL,
+			VideoRangeType.DOVI_WITH_HDR10_PLUS,
+			VideoRangeType.DOVI_WITH_ELHDR10_PLUS,
+		).joinToString("|") { it.serialName }
 	}
 
 	/** mpv does not send the Jellyfin authorization header, so authenticate with the token in the url instead. */

@@ -89,6 +89,27 @@ frame, which keeps 4K free of shimmer on a screen smaller than the video. Edges 
 surroundings stay transparent so the theater shows through. Runtimes that do offer cylinder layers keep using
 them. `FELLYJIN_SCREEN=projection` forces the app-drawn screen.
 
+### Energy and picture quality
+
+- **Refresh rate: Energy saving** (default) picks the lowest headset refresh rate of at least 90 Hz that is a whole
+  multiple of the film's frame rate (24p → 120 Hz, 30p → 90 Hz), so frames stay evenly paced while the GPU draws
+  fewer frames. **Maximum** always uses the highest rate. Both need the runtime's `XR_FB_display_refresh_rate`;
+  otherwise SteamVR's own setting applies.
+- The app-drawn screen only shades the pixels around the screen (scissor) instead of the whole view, and the theater
+  renders at half resolution.
+- The screen texture is sRGB, so filtering and mipmaps happen in linear light. Fine detail and colors stay right
+  when a 4K frame is minified, with up to 16× anisotropic filtering.
+- mpv upscales sources up to 1440p with sigmoid upscaling, anti-ringing and light debanding. 4K sources take the
+  cheap path.
+- The JVM runs generational ZGC (sub-millisecond pauses, so garbage collection never stalls the VR frame loop) and
+  returns unused memory to the system.
+- The gamepad is polled at 60 Hz with a controller and 4 Hz without one.
+- **Dolby Vision profile 5** (no HDR10/SDR base layer) is converted by the server, because mpv's OpenGL render path
+  can't apply Dolby's reshaping and would show green and purple colors. Profiles 7 and 8 play directly. For correct
+  colors, enable tone mapping in the Jellyfin server's transcoding settings.
+- Hardware decoding: HEVC, H.264 and VP9 are decoded by the Snapdragon (V4L2 M2M). AV1 is decoded in software,
+  because the bundled ffmpeg has no V4L2 AV1 decoder.
+
 ### Smoothness at 144 Hz
 
 - The app asks for the headset's highest refresh rate through `XR_FB_display_refresh_rate` when SteamVR exposes it.

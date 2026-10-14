@@ -249,6 +249,7 @@ class TheaterShader : AutoCloseable {
 		glDisable(GL_DEPTH_TEST)
 		glDisable(GL_SCISSOR_TEST)
 		glDisable(GL_CULL_FACE)
+		glDisable(GL_FRAMEBUFFER_SRGB_ENABLE) // the shader encodes its output itself
 
 		// Room layout around the screen, in room space: viewer at the origin, screen centered on -Z
 		val halfWidth = max(room.screenWidth * 0.5f + 3f, 6f)
@@ -492,6 +493,9 @@ internal fun viewToRoom(out: FloatArray, x: Float, y: Float, z: Float, w: Float,
 }
 
 	/** Compile and link a GLSL program, throwing [XrException] with the driver's log on errors. */
+/** GL_FRAMEBUFFER_SRGB, kept off for passes that write already encoded values. */
+private const val GL_FRAMEBUFFER_SRGB_ENABLE = 0x8DB9
+
 internal fun linkShaderProgram(vertex: String, fragment: String): Int {
 		fun compile(type: Int, source: String): Int {
 			val shader = glCreateShader(type)

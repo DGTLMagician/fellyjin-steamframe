@@ -362,8 +362,12 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		if (screen != null) VrDiagnostics.update { it.copy(features = it.features + "curved screen (drawn by Fellyjin)") }
 	}
 
-	/** Ask for the fastest refresh rate the headset offers (144 Hz on the Steam Frame), if the runtime allows it. */
-	private fun requestHighestRefreshRate(stack: MemoryStack) {
+	/** Refresh rates the headset offers, empty when the runtime doesn't let apps choose. */
+	private var availableRates = emptyList<Float>()
+	private var requestedRate = 0f
+
+	/** Read the selectable refresh rates (XR_FB_display_refresh_rate) and request the initial one. */
+	private fun initRefreshRates(stack: MemoryStack) {
 		val session = session ?: return
 		if (!supportsRefreshRate) {
 			logger.info("Runtime does not expose XR_FB_display_refresh_rate, the refresh rate follows the SteamVR setting")
@@ -373,11 +377,33 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		if (FBDisplayRefreshRate.xrEnumerateDisplayRefreshRatesFB(session, count, null) < 0 || count[0] == 0) return
 		val rates = stack.mallocFloat(count[0])
 		if (FBDisplayRefreshRate.xrEnumerateDisplayRefreshRatesFB(session, count, rates) < 0) return
-		val available = (0 until count[0]).map { rates[it] }
-		val best = available.max()
-		val result = FBDisplayRefreshRate.xrRequestDisplayRefreshRateFB(session, best)
-		logger.info("Display refresh rates $available, requested $best Hz (result $result)")
-		VrDiagnostics.update { it.copy(refreshRate = "${best.toInt()} Hz requested (available: ${available.joinToString { r -> r.toInt().toString() }})") }
+		availableRates = (0 until count[0]).map { rates[it] }.sorted()
+		// Until the video frame rate is known: the highest rate for maximum, 90 Hz class otherwise
+		requestRefreshRate(if (settings.refreshMode == RefreshMode.MAXIMUM) availableRates.last() else chooseRate(null))
+	}
+
+	/**
+	 * Energy saving picks the lowest rate of at least 90 Hz that is a whole multiple of the video frame rate (24p -> 120
+	 * Hz, 30p -> 90 Hz, 60p -> 120 Hz), so frames are paced evenly without rendering more often than useful.
+	 */
+	private fun chooseRate(videoFps: Double?): Float {
+		val candidates = availableRates.filter { it >= MIN_COMFORT_RATE }.ifEmpty { availableRates }
+		if (videoFps == null || videoFps <= 0) return candidates.first()
+		return candidates.firstOrNull { rate ->
+			val multiple = rate / videoFps
+			multiple >= 1 && kotlin.math.abs(multiple - kotlin.math.round(multiple)) < 0.02
+		} ?: candidates.last()
+	}
+
+	private fun requestRefreshRate(rate: Float) {
+		val session = session ?: return
+		if (availableRates.isEmpty() || rate == requestedRate) return
+		val result = FBDisplayRefreshRate.xrRequestDisplayRefreshRateFB(session, rate)
+		requestedRate = rate
+		logger.info("Display refresh rates $availableRates, requested $rate Hz (result $result)")
+		VrDiagnostics.update {
+			it.copy(refreshRate = "${rate.toInt()} Hz (${settings.refreshMode.label}; available: ${availableRates.joinToString { r -> r.toInt().toString() }})")
+		}
 	}
 
 	private fun availableExtensions(stack: MemoryStack): Set<String> {
@@ -612,6 +638,13 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				put("dscale", "mitchell")
 				put("deband", "yes")
 				put("deband-iterations", "2")
+				// Subtle grain hides the deband steps without the noisy look of the default strength
+				put("deband-grain", "16")
+				// Fewer halos around edges when upscaling, correct gamma when downscaling
+				put("sigmoid-upscaling", "yes")
+				put("scale-antiring", "0.6")
+				put("linear-downscaling", "yes")
+				put("correct-downscaling", "yes")
 			}
 
 			PictureQuality.BALANCED -> {
@@ -628,6 +661,10 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 	}
 
 	override fun onStreamLoaded(player: MpvPlayer, stream: ResolvedStream) {
+		if (settings.refreshMode == RefreshMode.ENERGY_SAVING) {
+			val fps = player.getProperty("container-fps")?.toDoubleOrNull()
+			requestRefreshRate(chooseRate(fps))
+		}
 		stereoLayout = stream.stereoLayout
 		if (stereoLayout != StereoLayout.MONO) player.command("show-text", "3D: ${stereoLayout.name.lowercase().replace('_', ' ')}", "3000")
 	}
@@ -668,6 +705,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		player.trySetProperty("cscale", if (high) "spline36" else "bilinear")
 		player.trySetProperty("scale", if (high) "spline36" else "bilinear")
 		player.trySetProperty("hdr-compute-peak", if (uhd) "no" else "auto")
+		player.trySetProperty("sigmoid-upscaling", if (high) "yes" else "no")
 		logger.info("Video ${videoWidth}px wide, ${if (high) "high quality" else "fast"} render path")
 	}
 
@@ -775,6 +813,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		val views = XrView.calloc(2, stack)
 		views.forEach { it.`type$Default`() }
 		val count = stack.mallocInt(1)
+		val viewState = XrViewState.calloc(stack).`type$Default`()
 		val result = xrLocateViews(
 			session ?: return null,
 			XrViewLocateInfo.calloc(stack)
@@ -782,14 +821,16 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				.viewConfigurationType(XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO)
 				.displayTime(displayTime)
 				.space(localSpace ?: return null),
-			XrViewState.calloc(stack).`type$Default`(),
+			viewState,
 			count,
 			views,
 		)
-		return if (result >= 0 && count[0] == 2) views else null
+		// When tracking is lost the poses are undefined: skip the projection layers rather than show garbage
+		val valid = (XR_VIEW_STATE_ORIENTATION_VALID_BIT or XR_VIEW_STATE_POSITION_VALID_BIT).toLong()
+		return if (result >= 0 && count[0] == 2 && viewState.viewStateFlags() and valid == valid) views else null
 	}
 
-	override fun close(player: MpvPlayer) {
+	override fun close(player: MpvPlayer?) {
 		// Stops the render thread, which frees mpv's render context on its own OpenGL context
 		videoThread?.close()
 		videoThread = null
@@ -866,7 +907,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 					"xrBeginSession",
 				)
 				sessionRunning = true
-				requestHighestRefreshRate(stack)
+				initRefreshRates(stack)
 			}
 
 			XR_SESSION_STATE_STOPPING -> {
@@ -1145,6 +1186,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		const val FRAME_CONTROLLER_EXTENSION = "XR_VALVE_frame_controller_interaction"
 		const val FRAME_CONTROLLER_PROFILE = "/interaction_profiles/valve/frame_controller_valve"
 		const val MIN_DISTANCE = 1.5f
+		/** Below this head tracking feels less smooth, energy saving never goes lower. */
+		const val MIN_COMFORT_RATE = 89.5f
 		const val MAX_DISTANCE = 60f
 		val MAX_CENTRAL_ANGLE = (PI * 0.95).toFloat()
 

@@ -209,7 +209,8 @@ class GamepadInput(
 				update(UiAction.BACK, inputs.b, repeat = false)
 			}
 
-			Thread.sleep(POLL_INTERVAL_MS)
+			// 60 Hz is plenty for UI navigation; without a controller only the slow device scan is needed
+			Thread.sleep(if (device != null) POLL_INTERVAL_MS else IDLE_POLL_INTERVAL_MS)
 		}
 		device?.let { close(sdl, it) }
 	}
@@ -404,7 +405,8 @@ class GamepadInput(
 		const val HAT_LEFT = 8
 
 		const val STICK_THRESHOLD = 0.6f
-		const val POLL_INTERVAL_MS = 8L
+		const val POLL_INTERVAL_MS = 16L
+		const val IDLE_POLL_INTERVAL_MS = 250L
 		const val SCAN_INTERVAL_MS = 1_000L
 		const val REPEAT_DELAY_MS = 380L
 		const val REPEAT_INTERVAL_MS = 110L

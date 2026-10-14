@@ -3,12 +3,17 @@ package app.fellyjin.vr
 import app.fellyjin.appEnv
 import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.GL_BLEND
+import org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT
+import org.lwjgl.opengl.GL11.glClear
+import org.lwjgl.opengl.GL11.glClearColor
+import org.lwjgl.opengl.GL11.glEnable
+import org.lwjgl.opengl.GL11.glGetFloat
+import org.lwjgl.opengl.GL11.glScissor
 import org.lwjgl.opengl.GL11.GL_CULL_FACE
 import org.lwjgl.opengl.GL11.GL_DEPTH_TEST
 import org.lwjgl.opengl.GL11.GL_LINEAR
 import org.lwjgl.opengl.GL11.GL_LINEAR_MIPMAP_LINEAR
 import org.lwjgl.opengl.GL11.GL_RGBA
-import org.lwjgl.opengl.GL11.GL_RGBA8
 import org.lwjgl.opengl.GL11.GL_SCISSOR_TEST
 import org.lwjgl.opengl.GL11.GL_TEXTURE_2D
 import org.lwjgl.opengl.GL11.GL_TEXTURE_MAG_FILTER
@@ -184,13 +189,17 @@ class ScreenShader : AutoCloseable {
 		this.width = width
 		this.height = height
 		glBindTexture(GL_TEXTURE_2D, texture)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
+		// sRGB storage: sampling and mipmapping happen in linear light, which keeps fine detail and colors right when
+		// a 4K frame is minified. The blit from mpv's 8 bit buffer copies the encoded values unchanged.
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
 		glGenerateMipmap(GL_TEXTURE_2D)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-		if (GL.getCapabilities().GL_EXT_texture_filter_anisotropic) glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8f)
+		if (GL.getCapabilities().GL_EXT_texture_filter_anisotropic) {
+			glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, glGetFloat(GL_MAX_TEXTURE_MAX_ANISOTROPY).coerceIn(1f, 16f))
+		}
 		glBindTexture(GL_TEXTURE_2D, 0)
 		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer)
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
@@ -208,6 +217,8 @@ class ScreenShader : AutoCloseable {
 	}
 
 	fun begin(room: RoomState, curved: Boolean) {
+		this.room = room
+		this.curved = curved
 		glUseProgram(program)
 		glBindVertexArray(vao)
 		glActiveTexture(GL_TEXTURE0)
@@ -216,6 +227,8 @@ class ScreenShader : AutoCloseable {
 		glDisable(GL_DEPTH_TEST)
 		glDisable(GL_SCISSOR_TEST)
 		glDisable(GL_CULL_FACE)
+		// The shader outputs linear light: let the hardware encode it for sRGB swapchains (no-op for linear ones)
+		glEnable(GL_FRAMEBUFFER_SRGB)
 		val halfAngle = (room.screenWidth / room.distance / 2f).coerceAtMost(MAX_HALF_ANGLE)
 		// radius, half angle (curved) or half width (flat), half height
 		glUniform3f(uScreen, room.distance, if (curved) halfAngle else room.screenWidth / 2f, room.screenHeight / 2f)
@@ -242,10 +255,77 @@ class ScreenShader : AutoCloseable {
 		glUniform4f(uFov, tanLeft, tanRight, tanDown, tanUp)
 		glUniform4f(uRect, rect[0], rect[1], rect[2], rect[3])
 		glViewport(0, 0, width, height)
+
+		// Clear to transparent (a fast clear), then shade only the screen's bounding box: the screen rarely fills the
+		// view, and pixels around it would only compute "transparent" at full resolution, 144 times per second
+		glDisable(GL_SCISSOR_TEST)
+		glClearColor(0f, 0f, 0f, 0f)
+		glClear(GL_COLOR_BUFFER_BIT)
+		val box = screenBounds(cy * dx + sy * dz, dy, -sy * dx + cy * dz, tanLeft, tanRight, tanDown, tanUp, width, height)
+		if (box != null && box[2] <= 0) return // screen not in view
+		if (box != null) {
+			glEnable(GL_SCISSOR_TEST)
+			glScissor(box[0], box[1], box[2], box[3])
+		}
 		glDrawArrays(GL_TRIANGLES, 0, 3)
+		glDisable(GL_SCISSOR_TEST)
+	}
+
+	private var room = RoomState()
+	private var curved = true
+	private val bounds = IntArray(4)
+
+	/**
+	 * Pixel rect (x, y, width, height) around the screen as seen from the eye, null when it can't be bounded (the
+	 * screen reaches behind the eye), width 0 when it is out of view. Samples points along the screen's outline in
+	 * room space, projects them with the eye's view and adds a margin for the curve between samples.
+	 */
+	private fun screenBounds(ex: Float, ey: Float, ez: Float, tanLeft: Float, tanRight: Float, tanDown: Float, tanUp: Float, width: Int, height: Int): IntArray? {
+		val m = viewToRoom
+		var minX = Float.MAX_VALUE
+		var minY = Float.MAX_VALUE
+		var maxX = -Float.MAX_VALUE
+		var maxY = -Float.MAX_VALUE
+		val halfHeight = room.screenHeight / 2f
+		val halfAngle = (room.screenWidth / room.distance / 2f).coerceAtMost(MAX_HALF_ANGLE)
+		for (i in 0..OUTLINE_SAMPLES) {
+			val f = i / OUTLINE_SAMPLES.toFloat() * 2f - 1f
+			val px = if (curved) room.distance * sin(halfAngle * f) else room.screenWidth / 2f * f
+			val pz = if (curved) -room.distance * cos(halfAngle * f) else -room.distance
+			for (side in 0..1) {
+				val py = room.verticalOffset + if (side == 0) -halfHeight else halfHeight
+				// Room space to view space: multiply by the transpose of the (orthonormal) view to room rotation
+				val rx = px - ex
+				val ry = py - ey
+				val rz = pz - ez
+				val vx = m[0] * rx + m[1] * ry + m[2] * rz
+				val vy = m[3] * rx + m[4] * ry + m[5] * rz
+				val vz = m[6] * rx + m[7] * ry + m[8] * rz
+				if (vz > -0.05f) return null
+				val sx = vx / -vz
+				val sy = vy / -vz
+				minX = minOf(minX, sx)
+				maxX = maxOf(maxX, sx)
+				minY = minOf(minY, sy)
+				maxY = maxOf(maxY, sy)
+			}
+		}
+		// Tangent space to pixels, with a margin for the curve between samples and the anti-aliased edge
+		val marginX = (maxX - minX) * 0.03f + 2f * (tanRight - tanLeft) / width
+		val marginY = (maxY - minY) * 0.06f + 2f * (tanUp - tanDown) / height
+		val x0 = (((minX - marginX - tanLeft) / (tanRight - tanLeft)) * width).toInt().coerceIn(0, width)
+		val x1 = (((maxX + marginX - tanLeft) / (tanRight - tanLeft)) * width).toInt().coerceIn(0, width)
+		val y0 = (((minY - marginY - tanDown) / (tanUp - tanDown)) * height).toInt().coerceIn(0, height)
+		val y1 = (((maxY + marginY - tanDown) / (tanUp - tanDown)) * height).toInt().coerceIn(0, height)
+		bounds[0] = x0
+		bounds[1] = y0
+		bounds[2] = if (x1 > x0 && y1 > y0) x1 - x0 else 0
+		bounds[3] = (y1 - y0).coerceAtLeast(0)
+		return bounds
 	}
 
 	fun end() {
+		glDisable(GL_FRAMEBUFFER_SRGB)
 		glBindVertexArray(0)
 		glUseProgram(0)
 		glBindTexture(GL_TEXTURE_2D, 0)
@@ -260,6 +340,10 @@ class ScreenShader : AutoCloseable {
 
 	private companion object {
 		const val GL_TEXTURE_MAX_ANISOTROPY = 0x84FE
+		const val GL_MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF
+		const val GL_SRGB8_ALPHA8 = 0x8C43
+		const val GL_FRAMEBUFFER_SRGB = 0x8DB9
+		const val OUTLINE_SAMPLES = 12
 		const val MAX_HALF_ANGLE = 1.5f
 
 		val VERTEX_SHADER = """

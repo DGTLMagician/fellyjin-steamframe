@@ -40,11 +40,21 @@ enum class PictureQuality(val label: String, val maxTextureWidth: Int) {
 }
 
 @Serializable
+enum class RefreshMode(val label: String) {
+	/** The lowest refresh rate of at least 90 Hz that is a multiple of the video frame rate: even pacing, less power. */
+	ENERGY_SAVING("Energy saving (match video)"),
+
+	/** Always the highest refresh rate the headset offers. */
+	MAXIMUM("Maximum"),
+}
+
+@Serializable
 data class CinemaSettings(
 	val screen: ScreenPreset = ScreenPreset.HUGE,
 	val curved: Boolean = true,
 	val environment: CinemaEnvironment = CinemaEnvironment.THEATER,
 	val quality: PictureQuality = PictureQuality.HIGH,
+	val refreshMode: RefreshMode = RefreshMode.ENERGY_SAVING,
 	/** Height offset of the screen center relative to eye level, in meters. */
 	val verticalOffsetMeters: Float = 0f,
 )

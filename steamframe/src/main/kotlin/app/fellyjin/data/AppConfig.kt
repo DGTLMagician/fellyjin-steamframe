@@ -98,6 +98,8 @@ class ConfigStore(
 
 	val current: AppConfig get() = _config.value
 
+	/** Updates are serialized with their save, so a later change can never be overwritten by an older snapshot. */
+	@Synchronized
 	fun update(transform: (AppConfig) -> AppConfig) {
 		_config.update(transform)
 		save(_config.value)
@@ -110,6 +112,8 @@ class ConfigStore(
 		AppConfig()
 	}
 
+	// Updates come from the UI and from the input thread (learned buttons): one writer at a time for the temp file
+	@Synchronized
 	private fun save(config: AppConfig) {
 		try {
 			file.parent.createDirectories()

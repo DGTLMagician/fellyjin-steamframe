@@ -59,10 +59,12 @@ class XrSwapchainImages private constructor(
 	fun acquire(stack: MemoryStack): Int {
 		val index = stack.mallocInt(1)
 		xrCheck(xrAcquireSwapchainImage(swapchain, XrSwapchainImageAcquireInfo.calloc(stack).`type$Default`(), index), "xrAcquireSwapchainImage")
-		xrCheck(
-			xrWaitSwapchainImage(swapchain, XrSwapchainImageWaitInfo.calloc(stack).`type$Default`().timeout(XR_INFINITE_DURATION)),
-			"xrWaitSwapchainImage",
-		)
+		val waited = xrWaitSwapchainImage(swapchain, XrSwapchainImageWaitInfo.calloc(stack).`type$Default`().timeout(XR_INFINITE_DURATION))
+		if (waited < 0) {
+			// Release what we acquired, or every later acquire on this swapchain fails with a call order error
+			xrReleaseSwapchainImage(swapchain, XrSwapchainImageReleaseInfo.calloc(stack).`type$Default`())
+			xrCheck(waited, "xrWaitSwapchainImage")
+		}
 		glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[index[0]])
 		return framebuffers[index[0]]
 	}

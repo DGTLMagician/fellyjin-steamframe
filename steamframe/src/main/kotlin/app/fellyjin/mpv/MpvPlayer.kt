@@ -9,6 +9,10 @@ import com.sun.jna.Pointer
 import com.sun.jna.ptr.PointerByReference
 import org.slf4j.LoggerFactory
 import java.lang.ref.Reference
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -59,44 +63,58 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		mpv.mpv_create() ?: error("mpv_create failed (LC_NUMERIC is ${CLocale.numeric()})")
 	}
 
-	@Volatile
-	private var renderContext: Pointer? = null
+	private val renderContext = AtomicReference<Pointer?>(null)
 	// Kept as fields so the JNA callbacks are not garbage collected while mpv may call them
 	private var getProcAddress: LibMpv.GetProcAddress? = null
 	private var updateCallback: LibMpv.UpdateCallback? = null
+
+	/**
+	 * Every call into mpv holds the read lock, [close] takes the write lock. The UI thread sends commands (buttons,
+	 * stop) while the playback thread may be destroying mpv; without this a late button press used a freed handle.
+	 */
+	private val lock = ReentrantReadWriteLock()
 	private var closed = false
 
 	init {
-		for ((name, value) in options) {
-			val result = mpv.mpv_set_option_string(handle, name, value)
-			if (result < 0) logger.warn("Unable to set mpv option $name=$value: ${mpv.mpv_error_string(result)}")
+		try {
+			for ((name, value) in options) {
+				val result = mpv.mpv_set_option_string(handle, name, value)
+				if (result < 0) logger.warn("Unable to set mpv option $name=$value: ${mpv.mpv_error_string(result)}")
+			}
+			check(mpv.mpv_initialize(handle), "mpv_initialize")
+		} catch (err: Throwable) {
+			// A failed start must not leave the handle (and a half opened video output) behind
+			mpv.mpv_terminate_destroy(handle)
+			throw err
 		}
-		check(mpv.mpv_initialize(handle), "mpv_initialize")
 	}
 
-	fun command(vararg args: String) {
+	/** Run [block] unless mpv is already destroyed, in which case [default] is returned. */
+	private inline fun <T> api(default: T, block: () -> T): T = lock.read { if (closed) default else block() }
+
+	fun command(vararg args: String) = api(Unit) {
 		val result = mpv.mpv_command(handle, arrayOf(*args, null))
 		if (result < 0) logger.warn("mpv command ${args.joinToString(" ")} failed: ${mpv.mpv_error_string(result)}")
 	}
 
 	/** Run a command in input.conf syntax, which supports prefixes like `osd-msg-bar`. */
-	fun commandString(command: String): Boolean {
+	fun commandString(command: String): Boolean = api(false) {
 		val result = mpv.mpv_command_string(handle, command)
 		if (result < 0) logger.warn("mpv command $command failed: ${mpv.mpv_error_string(result)}")
-		return result >= 0
+		result >= 0
 	}
 
-	fun setProperty(name: String, value: String) {
+	fun setProperty(name: String, value: String) = api(Unit) {
 		val result = mpv.mpv_set_property_string(handle, name, value)
 		if (result < 0) logger.warn("Unable to set mpv property $name=$value: ${mpv.mpv_error_string(result)}")
 	}
 
 	/** Set a property without logging failures, returns whether mpv accepted it (e.g. options renamed between versions). */
-	fun trySetProperty(name: String, value: String): Boolean = mpv.mpv_set_property_string(handle, name, value) >= 0
+	fun trySetProperty(name: String, value: String): Boolean = api(false) { mpv.mpv_set_property_string(handle, name, value) >= 0 }
 
-	fun getProperty(name: String): String? {
-		val ptr = mpv.mpv_get_property_string(handle, name) ?: return null
-		return try {
+	fun getProperty(name: String): String? = api(null) {
+		val ptr = mpv.mpv_get_property_string(handle, name) ?: return@api null
+		try {
 			ptr.getString(0, "UTF-8")
 		} finally {
 			mpv.mpv_free(ptr)
@@ -129,9 +147,9 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	}
 
 	/** Poll a single event, returns null when the queue is empty after waiting [timeoutSeconds]. */
-	fun pollEvent(timeoutSeconds: Double): MpvEvent? {
+	fun pollEvent(timeoutSeconds: Double): MpvEvent? = api(null) {
 		val event = mpv.mpv_wait_event(handle, timeoutSeconds)
-		return when (event.getInt(0)) {
+		when (event.getInt(0)) {
 			LibMpv.EVENT_NONE -> null
 			LibMpv.EVENT_SHUTDOWN -> MpvEvent.Shutdown
 			LibMpv.EVENT_START_FILE -> MpvEvent.StartFile
@@ -154,15 +172,15 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		}
 	}
 
-	fun wakeup() = mpv.mpv_wakeup(handle)
+	fun wakeup() = api(Unit) { mpv.mpv_wakeup(handle) }
 
 	// Render API
 
 	/**
 	 * Create an OpenGL render context, requires `vo=libmpv` and a current OpenGL context on the calling thread.
 	 */
-	fun createGlRenderContext(procAddress: (String) -> Long, x11Display: Long?, onUpdate: (() -> Unit)? = null) {
-		check(renderContext == null) { "Render context already created" }
+	fun createGlRenderContext(procAddress: (String) -> Long, x11Display: Long?, onUpdate: (() -> Unit)? = null) = api(Unit) {
+		check(renderContext.get() == null) { "Render context already created" }
 
 		val callback = LibMpv.GetProcAddress { _, name -> procAddress(name).takeIf { it != 0L }?.let(::Pointer) }
 		getProcAddress = callback
@@ -184,7 +202,7 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 
 		val result = PointerByReference()
 		check(mpv.mpv_render_context_create(result, handle, params), "mpv_render_context_create")
-		renderContext = result.value
+		renderContext.set(result.value)
 		if (onUpdate != null) {
 			// Only signals the render thread, mpv forbids calling its API from inside this callback
 			val update = LibMpv.UpdateCallback { onUpdate() }
@@ -198,9 +216,9 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	}
 
 	/** Returns true when mpv has a new video frame that should be rendered. */
-	fun renderUpdateAvailable(): Boolean {
-		val ctx = renderContext ?: return false
-		return mpv.mpv_render_context_update(ctx) and LibMpv.RENDER_UPDATE_FRAME != 0L
+	fun renderUpdateAvailable(): Boolean = api(false) {
+		val ctx = renderContext.get() ?: return@api false
+		mpv.mpv_render_context_update(ctx) and LibMpv.RENDER_UPDATE_FRAME != 0L
 	}
 
 	private val fboStruct = Memory(16)
@@ -211,8 +229,8 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	 * Render the current frame into the OpenGL framebuffer [fbo] of the given size. With [blockForTargetTime] mpv
 	 * waits until the frame is due, which gives the most even frame pacing on a dedicated render thread.
 	 */
-	fun render(fbo: Int, width: Int, height: Int, flip: Boolean, blockForTargetTime: Boolean = false) {
-		val ctx = renderContext ?: return
+	fun render(fbo: Int, width: Int, height: Int, flip: Boolean, blockForTargetTime: Boolean = false) = api(Unit) {
+		val ctx = renderContext.get() ?: return@api
 		// struct mpv_opengl_fbo { int fbo; int w; int h; int internal_format; }
 		fboStruct.setInt(0, fbo)
 		fboStruct.setInt(4, width)
@@ -229,24 +247,29 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 		mpv.mpv_render_context_render(ctx, params)
 	}
 
-	fun reportSwap() {
-		renderContext?.let(mpv::mpv_render_context_report_swap)
+	fun reportSwap() = api(Unit) {
+		renderContext.get()?.let(mpv::mpv_render_context_report_swap)
 	}
 
-	/** Free the render context, must be called on the OpenGL thread before the context is destroyed. */
-	fun freeRenderContext() {
-		renderContext?.let {
+	/** Free the render context, must be called on its OpenGL thread before that context is destroyed. */
+	fun freeRenderContext() = api(Unit) {
+		// Atomic take: only one caller can ever free it
+		renderContext.getAndSet(null)?.let {
 			mpv.mpv_render_context_set_update_callback(it, null, null)
 			mpv.mpv_render_context_free(it)
 		}
-		renderContext = null
 		updateCallback = null
 	}
 
-	override fun close() {
-		if (closed) return
+	override fun close() = lock.write {
+		if (closed) return@write
 		closed = true
-		freeRenderContext()
+		if (renderContext.get() != null) {
+			// Its render thread didn't stop: freeing it here (without its GL context) or destroying mpv under it would
+			// crash the process. Leaking this one player is the safe choice.
+			logger.error("mpv render context still in use while closing, leaving this mpv instance alive")
+			return@write
+		}
 		mpv.mpv_terminate_destroy(handle)
 		getProcAddress = null
 	}

@@ -129,7 +129,8 @@ class TheaterPreviewTest {
 		try {
 			val width = 1920
 			val height = 1080
-			val target = framebuffer(width, height)
+			// sRGB like the headset's swapchain: the screen shader outputs linear light and the hardware encodes it
+			val target = framebuffer(width, height, srgb = true)
 			val video = syntheticMovieFrame()
 			for (curved in listOf(true, false)) {
 				val screen = ScreenShader()
@@ -189,10 +190,10 @@ class TheaterPreviewTest {
 		return fbo
 	}
 
-	private fun framebuffer(width: Int, height: Int): Int {
+	private fun framebuffer(width: Int, height: Int, srgb: Boolean = false): Int {
 		val texture = glGenTextures()
 		glBindTexture(GL_TEXTURE_2D, texture)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
+		glTexImage2D(GL_TEXTURE_2D, 0, if (srgb) 0x8C43 else GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
 		glBindTexture(GL_TEXTURE_2D, 0)
 		val fbo = glGenFramebuffers()
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo)

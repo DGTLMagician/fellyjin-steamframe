@@ -38,6 +38,7 @@ import app.fellyjin.data.HWDEC_AUTO
 import app.fellyjin.data.PlaybackMode
 import app.fellyjin.vr.CinemaEnvironment
 import app.fellyjin.vr.PictureQuality
+import app.fellyjin.vr.RefreshMode
 import app.fellyjin.vr.ScreenPreset
 
 @Composable
@@ -95,6 +96,9 @@ fun SettingsScreen(
 				}
 			}) { value ->
 				configStore.update { it.copy(cinema = it.cinema.copy(quality = value)) }
+			}
+			Choice("Refresh rate", RefreshMode.entries, config.cinema.refreshMode, { it.label }) { value ->
+				configStore.update { it.copy(cinema = it.cinema.copy(refreshMode = value)) }
 			}
 			Choice("Screen shape", listOf(true, false), config.cinema.curved, { if (it) "Curved" else "Flat" }) { value ->
 				configStore.update { it.copy(cinema = it.cinema.copy(curved = value)) }

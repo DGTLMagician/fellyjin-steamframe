@@ -125,6 +125,12 @@ class PlaybackController(
 		activePlayer?.wakeup()
 	}
 
+	/** Stop playback and wait (bounded) until the session is reported and VR / mpv are shut down cleanly. */
+	fun shutdown(timeoutMillis: Long = 3_000) {
+		stop()
+		thread?.join(timeoutMillis)
+	}
+
 	fun dismissError() {
 		if (_state.value is PlaybackState.Failed) _state.value = PlaybackState.Idle
 	}
@@ -230,14 +236,16 @@ class PlaybackController(
 		} finally {
 			activePlayer = null
 			windowedPlayback = false
+			// Always close the output, also when mpv failed to start: otherwise the video surface would stay over the UI
+			// (windowed) or the OpenXR session and GL context would leak (VR)
 			if (output is FlatWindowOutput) {
 				// mpv draws into a child of the video surface: destroy mpv first, removing the surface while mpv still
 				// uses it is an X11 error, which ends the whole process
 				player?.close()
-				player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
+				runCatching { output.close(player) }.onFailure { err -> logger.warn("Failed to close output", err) }
 			} else {
 				// The VR output frees mpv's render context, which must happen before mpv is destroyed
-				player?.let { runCatching { output.close(it) }.onFailure { err -> logger.warn("Failed to close output", err) } }
+				runCatching { output.close(player) }.onFailure { err -> logger.warn("Failed to close output", err) }
 				player?.close()
 			}
 			if (_state.value !is PlaybackState.Failed) _state.value = PlaybackState.Idle

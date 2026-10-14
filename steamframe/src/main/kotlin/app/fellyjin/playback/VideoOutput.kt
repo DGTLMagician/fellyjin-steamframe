@@ -23,8 +23,8 @@ interface VideoOutput {
 	/** Run a single output iteration. Returns false when the user asked to leave playback. */
 	fun frame(player: MpvPlayer): Boolean
 
-	/** Release all resources, mpv is closed afterwards. */
-	fun close(player: MpvPlayer)
+	/** Release all resources. [player] is null when mpv failed to start; mpv is closed afterwards otherwise. */
+	fun close(player: MpvPlayer?)
 }
 
 /**
@@ -101,7 +101,7 @@ class FlatWindowOutput(private val host: VideoHost? = null) : VideoOutput {
 			"osc-hidetimeout=3000,osc-fadeduration=250,osc-seekbarstyle=bar,osc-deadzonesize=0"
 	}
 
-	override fun close(player: MpvPlayer) {
+	override fun close(player: MpvPlayer?) {
 		if (windowId != null) host?.hide()
 	}
 }

@@ -89,7 +89,8 @@ fun main() {
 
 		Window(
 			onCloseRequest = {
-				playback.stop()
+				// Let playback report its position and end the VR session / mpv cleanly before the JVM exits
+				playback.shutdown()
 				exitApplication()
 			},
 			state = windowState,
