@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
@@ -77,6 +78,7 @@ fun HomeScreen(
 	playback: PlaybackController,
 	onOpenItem: (BaseItemDto) -> Unit,
 	onOpenSettings: () -> Unit,
+	onQuit: () -> Unit = {},
 ) {
 	val user by repository.user.collectAsState()
 	val playbackState by playback.state.collectAsState()
@@ -138,6 +140,9 @@ fun HomeScreen(
 						Spacer(Modifier.width(24.dp))
 					}
 					BigButton("Settings", onClick = onOpenSettings, icon = Icons.Default.Settings, primary = false)
+					Spacer(Modifier.width(14.dp))
+					// Gaming mode has no window close button: always offer a way out
+					BigButton("Quit", onClick = onQuit, icon = Icons.Default.PowerSettingsNew, primary = false)
 				}
 			}
 

@@ -31,6 +31,7 @@ interface LibMpv : Library {
 	/** [args] must be terminated by a null entry. */
 	fun mpv_command(ctx: Pointer, args: Array<String?>): Int
 	fun mpv_command_string(ctx: Pointer, args: String): Int
+	fun mpv_observe_property(ctx: Pointer, replyUserdata: Long, name: String, format: Int): Int
 	fun mpv_wait_event(ctx: Pointer, timeout: Double): Pointer
 
 	fun mpv_render_context_create(res: PointerByReference, mpv: Pointer, params: Pointer): Int
@@ -58,6 +59,10 @@ interface LibMpv : Library {
 		const val EVENT_END_FILE = 7
 		const val EVENT_FILE_LOADED = 8
 		const val EVENT_VIDEO_RECONFIG = 17
+		const val EVENT_PROPERTY_CHANGE = 22
+
+		// mpv_format
+		const val FORMAT_FLAG = 3
 
 		// mpv_end_file_reason
 		const val END_FILE_REASON_EOF = 0

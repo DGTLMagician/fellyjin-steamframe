@@ -14,6 +14,13 @@ import org.lwjgl.glfw.GLFW.glfwWindowHint
 import org.lwjgl.glfw.GLFWNativeX11.glfwGetX11Display
 import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.GL_LINEAR
+import org.lwjgl.opengl.GL11.GL_LINEAR_MIPMAP_LINEAR
+import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_S
+import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_T
+import org.lwjgl.opengl.GL11.glGetFloat
+import org.lwjgl.opengl.GL11.glTexParameterf
+import org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE
+import org.lwjgl.opengl.GL30.glGenerateMipmap
 import org.lwjgl.opengl.GL11.GL_NEAREST
 import org.lwjgl.opengl.GL11.GL_RGBA
 import org.lwjgl.opengl.GL11.GL_RGBA8
@@ -64,6 +71,11 @@ class VideoRenderThread(
 	private val flipY: Boolean,
 	/** The frame loop context is EGL: a shared context must be created with the same API. */
 	egl: Boolean = false,
+	/**
+	 * The frame loop samples the frames directly ([acquireLatestForSampling]) instead of copying them: buffers are
+	 * sRGB with a mip chain that this thread generates, so no copy and no mipmapping happens on the frame loop.
+	 */
+	private val sampled: Boolean = false,
 ) : AutoCloseable {
 	private val logger = LoggerFactory.getLogger(VideoRenderThread::class.java)
 
@@ -136,6 +148,39 @@ class VideoRenderThread(
 	}
 
 	val hasNewFrame: Boolean get() = synchronized(lock) { publishedFrame != copiedFrame && published >= 0 }
+
+	/** A finished frame the frame loop may sample until it acquires the next one. */
+	class SampledFrame(val texture: Int, val width: Int, val height: Int)
+
+	/**
+	 * Switch to the newest frame for sampling (frame loop thread, [sampled] mode). The previous frame is handed back to
+	 * mpv after the GPU finished the commands issued so far (which include every draw that sampled it). [onNew] can
+	 * read the new frame through the given framebuffer (bound as `GL_READ_FRAMEBUFFER`), e.g. to light the theater.
+	 */
+	fun acquireLatestForSampling(onNew: (framebuffer: Int, width: Int, height: Int) -> Unit = { _, _, _ -> }): SampledFrame? {
+		val index: Int
+		synchronized(lock) {
+			if (published < 0 || publishedFrame == copiedFrame) return null
+			val previous = reading
+			index = published
+			if (previous >= 0 && previous != index) {
+				val done = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+				buffers[previous].copiedFence.takeIf { it != NULL }?.let(::glDeleteSync)
+				buffers[previous].copiedFence = done
+			}
+			reading = index
+			copiedFrame = publishedFrame
+		}
+		glFlush()
+		val buffer = buffers[index]
+		// Wait on the GPU (not the CPU) until mpv's commands and the mipmaps for this frame are done
+		if (buffer.renderedFence != NULL) glWaitSync(buffer.renderedFence, 0, GL_TIMEOUT_IGNORED)
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer)
+		glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buffer.texture, 0)
+		onNew(readFramebuffer, buffer.width, buffer.height)
+		glBindFramebuffer(GL_FRAMEBUFFER, 0)
+		return SampledFrame(buffer.texture, buffer.width, buffer.height)
+	}
 
 	/**
 	 * Copy the newest frame into [targetFramebuffer] (frame loop thread). [onCopied] can read from the source frame,
@@ -232,6 +277,12 @@ class VideoRenderThread(
 		if (buffer.width != width || buffer.height != height) allocate(buffer, width, height)
 
 		player.render(buffer.framebuffer, width, height, flip = flipY, blockForTargetTime = true)
+		if (sampled) {
+			// Mipmaps here, on mpv's thread: on the frame loop a 4K mip chain cost a missed refresh now and then
+			glBindTexture(GL_TEXTURE_2D, buffer.texture)
+			glGenerateMipmap(GL_TEXTURE_2D)
+			glBindTexture(GL_TEXTURE_2D, 0)
+		}
 
 		val rendered = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
 		glFlush()
@@ -247,8 +298,20 @@ class VideoRenderThread(
 	private fun allocate(buffer: Buffer, width: Int, height: Int) {
 		if (buffer.texture == 0) buffer.texture = glGenTextures()
 		glBindTexture(GL_TEXTURE_2D, buffer.texture)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+		if (sampled) {
+			// sRGB storage: sampling and mipmaps in linear light. mpv writes encoded values, stored unchanged.
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
+			glGenerateMipmap(GL_TEXTURE_2D)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+			if (GL.getCapabilities().GL_EXT_texture_filter_anisotropic) {
+				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, glGetFloat(GL_MAX_TEXTURE_MAX_ANISOTROPY).coerceIn(1f, 16f))
+			}
+		} else {
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, null as java.nio.ByteBuffer?)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+		}
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 		glBindTexture(GL_TEXTURE_2D, 0)
 		if (buffer.framebuffer == 0) buffer.framebuffer = glGenFramebuffers()
@@ -258,6 +321,12 @@ class VideoRenderThread(
 		buffer.width = width
 		buffer.height = height
 		logger.info("Video buffer ${width}x$height")
+	}
+
+	private companion object {
+		const val GL_SRGB8_ALPHA8 = 0x8C43
+		const val GL_TEXTURE_MAX_ANISOTROPY = 0x84FE
+		const val GL_MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF
 	}
 
 	/** Stop the thread (it frees mpv's render context on its own context) and release the frame loop side. */

@@ -20,6 +20,9 @@ interface VideoOutput {
 
 	fun onVideoReconfig(player: MpvPlayer) = Unit
 
+	/** Paused or buffering changed (from mpv's property events, no blocking calls). */
+	fun onPausedChanged(paused: Boolean) = Unit
+
 	/** Run a single output iteration. Returns false when the user asked to leave playback. */
 	fun frame(player: MpvPlayer): Boolean
 

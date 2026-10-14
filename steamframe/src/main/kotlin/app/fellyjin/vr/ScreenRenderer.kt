@@ -96,21 +96,21 @@ class ScreenRenderer(
 			xrCheck(xrEnumerateViewConfigurationViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, count, views), "xrEnumerateViewConfigurationViews")
 			val view = views[0]
 			val scale = appEnv("SCREEN_SCALE")?.toFloatOrNull()?.coerceIn(0.4f, 2f) ?: 1f
-			max(512, (view.recommendedImageRectWidth() * scale).toInt()) to max(512, (view.recommendedImageRectHeight() * scale).toInt())
+			// SteamVR may ask for supersampled sizes (3408 px per eye seen on the Frame). Beyond ~2880 px the screen
+			// gains nothing visible but costs GPU time, power and missed refreshes (judder when turning the head).
+			val cap = if (appEnv("SCREEN_SCALE") != null) Int.MAX_VALUE else MAX_EYE_SIZE
+			max(512, (view.recommendedImageRectWidth() * scale).toInt().coerceAtMost(cap)) to
+				max(512, (view.recommendedImageRectHeight() * scale).toInt().coerceAtMost(cap))
 		}
 		eyes = List(2) { XrSwapchainImages.create(session, width, height, "screen eye $it") }
 	}
 
-	val hasContent: Boolean get() = shader.hasContent
-
-	fun resize(width: Int, height: Int) = shader.resize(width, height)
-
-	/** Copy a new video frame into the screen texture through [copy] (frame loop thread). */
-	fun update(copy: (framebuffer: Int, width: Int, height: Int) -> Boolean) = shader.update(copy)
-
-	/** Render both eyes and return the projection layer address. [eyeRects] are per eye UV rects (x0, y0, x1, y1). */
-	fun render(stack: MemoryStack, views: XrView.Buffer, room: RoomState, curved: Boolean, eyeRects: List<FloatArray>): Long {
-		shader.begin(room, curved)
+	/**
+	 * Render both eyes with [videoTexture] (an sRGB texture with mipmaps) and return the projection layer address.
+	 * [eyeRects] are per eye UV rects (x0, y0, x1, y1).
+	 */
+	fun render(stack: MemoryStack, views: XrView.Buffer, room: RoomState, curved: Boolean, eyeRects: List<FloatArray>, videoTexture: Int): Long {
+		shader.begin(room, curved, videoTexture)
 		val projectionViews = XrCompositionLayerProjectionView.calloc(2, stack)
 		for (eye in 0 until 2) {
 			val view = views[eye]
@@ -153,6 +153,10 @@ class ScreenRenderer(
 	override fun close() {
 		eyes.forEach(XrSwapchainImages::close)
 		shader.close()
+	}
+
+	private companion object {
+		const val MAX_EYE_SIZE = 2880
 	}
 }
 
@@ -216,13 +220,14 @@ class ScreenShader : AutoCloseable {
 		hasContent = true
 	}
 
-	fun begin(room: RoomState, curved: Boolean) {
+	/** [videoTexture] overrides the shader's own texture (filled through [update]), e.g. a frame of the render thread. */
+	fun begin(room: RoomState, curved: Boolean, videoTexture: Int = texture) {
 		this.room = room
 		this.curved = curved
 		glUseProgram(program)
 		glBindVertexArray(vao)
 		glActiveTexture(GL_TEXTURE0)
-		glBindTexture(GL_TEXTURE_2D, texture)
+		glBindTexture(GL_TEXTURE_2D, videoTexture)
 		glDisable(GL_BLEND)
 		glDisable(GL_DEPTH_TEST)
 		glDisable(GL_SCISSOR_TEST)

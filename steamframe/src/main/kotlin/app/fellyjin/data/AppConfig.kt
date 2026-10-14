@@ -62,6 +62,11 @@ data class PlaybackSettings(
 	val hwdec: String = HWDEC_AUTO,
 	/** Show mpv's statistics overlay (frame timings, dropped frames, decoder) during playback. */
 	val showStats: Boolean = false,
+	/**
+	 * Use the hardware decoder also for 10-bit (HDR) video. Off by default: the Steam Frame's V4L2 decoder hands 10-bit
+	 * frames over in a layout ffmpeg misreads, which shows HDR films with green and purple ("inverted") colors.
+	 */
+	val hardware10Bit: Boolean = false,
 	val autoPlayNextEpisode: Boolean = true,
 	val maxBitrateMbps: Int = 120,
 )

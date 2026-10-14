@@ -52,7 +52,11 @@ class VideoRenderThreadTest {
 	@Test
 	fun rendersFramesOnSharedEglContext() = rendersFramesOnSharedContext(egl = true)
 
-	private fun rendersFramesOnSharedContext(egl: Boolean) {
+	/** The VR screen path: frames are sampled in place (sRGB with mipmaps from the render thread), not copied. */
+	@Test
+	fun samplesFramesInPlace() = rendersFramesOnSharedContext(egl = true, sampled = true)
+
+	private fun rendersFramesOnSharedContext(egl: Boolean, sampled: Boolean = false) {
 		assumeTrue(Platform.get() == Platform.LINUX && System.getenv("DISPLAY") != null, "Needs Linux with an X display")
 		assumeTrue(LibMpv.isAvailable, "libmpv not installed")
 
@@ -69,7 +73,7 @@ class VideoRenderThreadTest {
 		val height = 240
 		val target = framebuffer(width, height)
 		val player = MpvPlayer(mapOf("vo" to "libmpv", "ao" to "null", "idle" to "yes", "terminal" to "no", "hwdec" to "no"))
-		val renderThread = VideoRenderThread(player, window, flipY = true, egl = egl)
+		val renderThread = VideoRenderThread(player, window, flipY = true, egl = egl, sampled = sampled)
 		var copies = 0
 		try {
 			player.load("av://lavfi:testsrc=duration=3:size=${width}x$height:rate=30", start = null, title = "test")
@@ -83,7 +87,17 @@ class VideoRenderThreadTest {
 						else -> Unit
 					}
 				}
-				if (renderThread.hasNewFrame && renderThread.copyLatest(target, width, height)) copies++
+				if (sampled) {
+					// Read the sampled frame through the framebuffer the render thread hands out, like the theater glow
+					val frame = renderThread.acquireLatestForSampling { fbo, w, h ->
+						glBindFramebuffer(org.lwjgl.opengl.GL30.GL_READ_FRAMEBUFFER, fbo)
+						glBindFramebuffer(org.lwjgl.opengl.GL30.GL_DRAW_FRAMEBUFFER, target)
+						org.lwjgl.opengl.GL30.glBlitFramebuffer(0, 0, w, h, 0, 0, width, height, org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT, org.lwjgl.opengl.GL11.GL_NEAREST)
+					}
+					if (frame != null) copies++
+				} else if (renderThread.hasNewFrame && renderThread.copyLatest(target, width, height)) {
+					copies++
+				}
 				Thread.sleep(7) // ~144 Hz frame loop
 			}
 
@@ -93,7 +107,7 @@ class VideoRenderThreadTest {
 			glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
 			val distinctColors = (0 until width * height).map { pixels.getInt(it * 4) }.toSet().size
 
-			println("[${if (egl) "EGL" else "GLX"}] Copied $copies frames, $distinctColors distinct colors in the last frame")
+			println("[${if (egl) "EGL" else "GLX"}${if (sampled) ", sampled" else ""}] Copied $copies frames, $distinctColors distinct colors in the last frame")
 			// 3 seconds at 30 fps: most frames should arrive (software GL on a busy machine may drop some), and the
 			// test pattern is colorful
 			assertTrue(copies >= 45, "Only $copies frames were copied")

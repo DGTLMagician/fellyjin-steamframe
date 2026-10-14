@@ -121,7 +121,9 @@ class TheaterRenderer(
 			views.forEach { it.`type$Default`() }
 			xrCheck(xrEnumerateViewConfigurationViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, count, views), "xrEnumerateViewConfigurationViews")
 			val view = views[0]
-			max(512, (view.recommendedImageRectWidth() * RENDER_SCALE).toInt()) to max(512, (view.recommendedImageRectHeight() * RENDER_SCALE).toInt())
+			// Half resolution, at most 1280 px: the room is dark and soft, more pixels only cost power
+			max(512, (view.recommendedImageRectWidth() * RENDER_SCALE).toInt().coerceAtMost(MAX_EYE_SIZE)) to
+				max(512, (view.recommendedImageRectHeight() * RENDER_SCALE).toInt().coerceAtMost(MAX_EYE_SIZE))
 		}
 		eyes = List(2) { XrSwapchainImages.create(session, width, height, "theater eye $it") }
 	}
@@ -181,6 +183,7 @@ class TheaterRenderer(
 	private companion object {
 		/** The room is dark with soft gradients, half resolution is indistinguishable and saves 75% of the pixels. */
 		const val RENDER_SCALE = 0.5f
+		const val MAX_EYE_SIZE = 1280
 	}
 }
 

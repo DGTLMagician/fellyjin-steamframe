@@ -46,6 +46,8 @@ sealed interface MpvEvent {
 	data object StartFile : MpvEvent
 	data object FileLoaded : MpvEvent
 	data object VideoReconfig : MpvEvent
+	/** An observed flag property changed ([MpvPlayer.observeFlag]); [value] is null when it is unavailable. */
+	data class FlagChanged(val name: String, val value: Boolean?) : MpvEvent
 	data class EndFile(val reason: EndReason) : MpvEvent
 }
 
@@ -155,6 +157,16 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 			LibMpv.EVENT_START_FILE -> MpvEvent.StartFile
 			LibMpv.EVENT_FILE_LOADED -> MpvEvent.FileLoaded
 			LibMpv.EVENT_VIDEO_RECONFIG -> MpvEvent.VideoReconfig
+			LibMpv.EVENT_PROPERTY_CHANGE -> {
+				// struct mpv_event_property { const char *name; mpv_format format; void *data; }
+				val property = event.getPointer(16)
+				if (property == null) MpvEvent.Other else {
+					val name = property.getPointer(0)?.getString(0, "UTF-8").orEmpty()
+					val format = property.getInt(Native.POINTER_SIZE.toLong())
+					val data = property.getPointer(2L * Native.POINTER_SIZE)
+					MpvEvent.FlagChanged(name, if (format == LibMpv.FORMAT_FLAG && data != null) data.getInt(0) != 0 else null)
+				}
+			}
 			LibMpv.EVENT_END_FILE -> {
 				// struct mpv_event { int event_id; int error; uint64_t reply_userdata; void *data; }
 				val data = event.getPointer(16)
@@ -173,6 +185,12 @@ class MpvPlayer(options: Map<String, String>) : AutoCloseable {
 	}
 
 	fun wakeup() = api(Unit) { mpv.mpv_wakeup(handle) }
+
+	/**
+	 * Get [MpvEvent.FlagChanged] events for a flag property. Reading the events costs nothing, unlike getProperty,
+	 * which waits for mpv's core and can stall a caller like the VR frame loop for milliseconds.
+	 */
+	fun observeFlag(name: String) = api(Unit) { mpv.mpv_observe_property(handle, 0, name, LibMpv.FORMAT_FLAG) }
 
 	// Render API
 

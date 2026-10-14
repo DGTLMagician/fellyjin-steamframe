@@ -103,6 +103,8 @@ class AppDependencies(
 	val configStore: ConfigStore,
 	val repository: JellyfinRepository,
 	val playback: PlaybackController,
+	/** Quit the app (stops playback cleanly and ends the process). */
+	val quit: () -> Unit = {},
 )
 
 /**
@@ -217,6 +219,7 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 						playback = deps.playback,
 						onOpenItem = ::openItem,
 						onOpenSettings = { navigator.push(Screen.Settings) },
+						onQuit = deps.quit,
 					)
 
 					is Screen.Library -> LibraryScreen(deps.repository, screen.id, screen.name, onOpenItem = ::openItem)
@@ -227,6 +230,7 @@ fun App(deps: AppDependencies, initialScreen: Screen, gamepad: GamepadInput? = n
 						playback = deps.playback,
 						onSignedOut = { navigator.replaceAll(Screen.Login) },
 						onChangeServer = { navigator.replaceAll(Screen.ServerSelect) },
+						onQuit = deps.quit,
 					)
 				}
 			}

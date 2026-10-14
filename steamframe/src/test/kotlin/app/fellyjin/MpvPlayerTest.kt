@@ -20,6 +20,7 @@ class MpvPlayerTest {
 		assumeTrue(LibMpv.isAvailable, "libmpv not installed")
 
 		MpvPlayer(mapOf("vo" to "null", "ao" to "null", "idle" to "yes", "terminal" to "no")).use { player ->
+			player.observeFlag("pause")
 			player.load("av://lavfi:testsrc=duration=1:size=320x240:rate=25", start = null, title = "Test pattern")
 
 			val seen = mutableListOf<MpvEvent>()
@@ -33,6 +34,8 @@ class MpvPlayerTest {
 			}
 
 			assertTrue(MpvEvent.FileLoaded in seen, "FILE_LOADED not received: $seen")
+			// Property events are parsed from mpv_event_property: name, format and the flag value must come through
+			assertTrue(MpvEvent.FlagChanged("pause", false) in seen, "pause property event not received: $seen")
 			assertEquals(MpvEvent.EndFile(EndReason.EOF), seen.last(), "Expected EOF, got $seen")
 			assertEquals(320 to 240, videoSize)
 			assertEquals("Test pattern", player.getProperty("force-media-title"))

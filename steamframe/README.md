@@ -107,7 +107,14 @@ them. `FELLYJIN_SCREEN=projection` forces the app-drawn screen.
 - **Dolby Vision profile 5** (no HDR10/SDR base layer) is converted by the server, because mpv's OpenGL render path
   can't apply Dolby's reshaping and would show green and purple colors. Profiles 7 and 8 play directly. For correct
   colors, enable tone mapping in the Jellyfin server's transcoding settings.
-- Hardware decoding: HEVC, H.264 and VP9 are decoded by the Snapdragon (V4L2 M2M). AV1 is decoded in software,
+- **HDR / 10-bit video is decoded in software** by default: the Steam Frame's V4L2 decoder hands over 10-bit frames
+  in a layout ffmpeg misreads, which shows HDR films with green and purple colors. Settings → Hardware decoding for
+  HDR / 10-bit turns the hardware decoder back on. The log records the decoder and pixel format of every video.
+- Judder when turning the head: nothing slow runs on the VR frame loop anymore. mpv's frames are sampled directly
+  from the render thread (sRGB, with mipmaps made on that thread, no copy). The paused state arrives through mpv
+  property events instead of blocking calls, progress polling runs on another thread, and the screen and theater
+  resolutions are capped at 2880 and 1280 pixels per eye.
+- Hardware decoding: HEVC, H.264 and VP9 (8-bit) are decoded by the Snapdragon (V4L2 M2M). AV1 is decoded in software,
   because the bundled ffmpeg has no V4L2 AV1 decoder.
 
 ### Smoothness at 144 Hz

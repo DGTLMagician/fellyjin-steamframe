@@ -48,6 +48,7 @@ fun SettingsScreen(
 	playback: PlaybackController?,
 	onSignedOut: () -> Unit,
 	onChangeServer: () -> Unit,
+	onQuit: () -> Unit = {},
 ) {
 	val config by configStore.config.collectAsState()
 	val scope = rememberCoroutineScope()
@@ -78,6 +79,11 @@ fun SettingsScreen(
 				}
 			}) { value ->
 				configStore.update { it.copy(playback = it.playback.copy(hwdec = value)) }
+			}
+			Choice("Hardware decoding for HDR / 10-bit", listOf(false, true), config.playback.hardware10Bit, {
+				if (it) "On (faster, colors may be wrong)" else "Off (correct colors)"
+			}) { value ->
+				configStore.update { it.copy(playback = it.playback.copy(hardware10Bit = value)) }
 			}
 			Choice("Performance overlay", listOf(false, true), config.playback.showStats, { if (it) "On" else "Off" }) { value ->
 				configStore.update { it.copy(playback = it.playback.copy(showStats = value)) }
@@ -132,6 +138,7 @@ fun SettingsScreen(
 			FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
 				BigButton("Sign out", onClick = { scope.launch { repository.logout(); onSignedOut() } }, primary = false)
 				BigButton("Change server", onClick = onChangeServer, primary = false)
+				BigButton("Quit Fellyjin", onClick = onQuit, primary = false)
 			}
 		}
 

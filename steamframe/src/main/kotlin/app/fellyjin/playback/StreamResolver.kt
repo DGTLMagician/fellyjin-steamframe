@@ -37,6 +37,8 @@ data class ResolvedStream(
 	val externalSubtitles: List<ExternalSubtitle>,
 	val startPosition: Duration?,
 	val stereoLayout: StereoLayout,
+	/** 10-bit or HDR video, which the Steam Frame's hardware decoder mis-decodes. */
+	val highBitDepth: Boolean = false,
 	/** mpv track numbers (1 based, per type) for the chosen streams; null for mpv's default, 0 for no subtitles. */
 	val mpvAudioTrack: Int? = null,
 	val mpvSubtitleTrack: Int? = null,
@@ -186,6 +188,9 @@ class StreamResolver(private val api: ApiClient) {
 				// MVC needs a decoder mpv doesn't have, play the base view
 				Video3dFormat.MVC, null -> StereoLayout.MONO
 			},
+			highBitDepth = source.mediaStreams.orEmpty().firstOrNull { it.type == MediaStreamType.VIDEO }?.let { video ->
+				(video.bitDepth ?: 8) > 8 || video.videoRangeType !in setOf(VideoRangeType.SDR, VideoRangeType.UNKNOWN)
+			} == true,
 			mpvAudioTrack = mpvTrack(MediaStreamType.AUDIO, tracks.audioStreamIndex),
 			mpvSubtitleTrack = subtitleTrack,
 		)

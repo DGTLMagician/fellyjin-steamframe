@@ -23,6 +23,7 @@ import app.fellyjin.BuildInfo
 import app.fellyjin.data.ConfigStore
 import app.fellyjin.data.JellyfinRepository
 import app.fellyjin.data.PlaybackMode
+import app.fellyjin.data.HWDEC_AUTO
 import app.fellyjin.data.resolveHwdec
 import app.fellyjin.mpv.EndReason
 import app.fellyjin.mpv.LibMpv
@@ -162,6 +163,10 @@ class PlaybackController(
 			activePlayer = player
 			windowedPlayback = output is FlatWindowOutput
 			output.attach(player)
+			player.observeFlag("pause")
+			player.observeFlag("paused-for-cache")
+			var paused = false
+			var buffering = false
 
 			var stream = if (item.id == PREVIEW_ITEM.id) previewStream()
 			else runBlocking { resolver.resolve(item, start, settings.playback.maxBitrateMbps, tracks) }
@@ -169,6 +174,7 @@ class PlaybackController(
 			_state.value = PlaybackState.Playing(stream.item, output.name, notice)
 
 			val session = ReportingSession(stream)
+			val polling = java.util.concurrent.atomic.AtomicBoolean(false)
 			var lastPoll = TimeSource.Monotonic.markNow()
 			var running = true
 
@@ -194,7 +200,15 @@ class PlaybackController(
 							session.start(player)
 						}
 
-						MpvEvent.VideoReconfig -> output.onVideoReconfig(player)
+						MpvEvent.VideoReconfig -> {
+							logger.info(
+								"Video: decoder ${player.getProperty("hwdec-current")}, format ${player.getProperty("video-params/pixelformat")}" +
+									" (hw ${player.getProperty("video-params/hw-pixelformat")}), ${player.getProperty("video-params/primaries")}" +
+									" / ${player.getProperty("video-params/gamma")}, ${player.getProperty("width")}x${player.getProperty("height")}" +
+									" @ ${player.getProperty("container-fps")} fps",
+							)
+							output.onVideoReconfig(player)
+						}
 
 						is MpvEvent.EndFile -> {
 							session.stop(failed = event.reason == EndReason.ERROR, ended = event.reason == EndReason.EOF)
@@ -216,6 +230,14 @@ class PlaybackController(
 							}
 						}
 
+						is MpvEvent.FlagChanged -> {
+							when (event.name) {
+								"pause" -> paused = event.value == true
+								"paused-for-cache" -> buffering = event.value == true
+							}
+							output.onPausedChanged(paused || buffering)
+						}
+
 						MpvEvent.Shutdown -> {
 							session.stop(failed = false, ended = false)
 							running = false
@@ -225,9 +247,17 @@ class PlaybackController(
 					}
 				}
 
-				if (lastPoll.elapsedNow() >= 1.seconds) {
+				if (lastPoll.elapsedNow() >= 1.seconds && !polling.get()) {
+					// Off the playback thread: in VR it runs the frame loop, and these mpv calls wait for mpv's core
 					lastPoll = TimeSource.Monotonic.markNow()
-					session.poll(player)
+					polling.set(true)
+					reportScope.launch {
+						try {
+							session.poll(player)
+						} finally {
+							polling.set(false)
+						}
+					}
 				}
 			}
 		} catch (err: Throwable) {
@@ -268,6 +298,11 @@ class PlaybackController(
 
 	private fun load(player: MpvPlayer, output: VideoOutput, stream: ResolvedStream) {
 		logger.info("Playing ${stream.item.name} using ${stream.playMethod} on ${output.name}")
+		// 10-bit / HDR in software unless the user opted in: the Frame's hardware decoder garbles 10-bit colors
+		val playback = configStore.current.playback
+		val softwareFor10Bit = stream.highBitDepth && !playback.hardware10Bit && playback.hwdec.let { it == HWDEC_AUTO || it == "auto-safe" }
+		player.setProperty("hwdec", if (softwareFor10Bit) "no" else resolveHwdec(playback.hwdec))
+		if (softwareFor10Bit) logger.info("10-bit/HDR video: decoding in software for correct colors")
 		// Track choices made on the detail page, mapped to mpv's per type track numbers
 		player.setProperty("aid", stream.mpvAudioTrack?.toString() ?: "auto")
 		player.setProperty("sid", when (val sid = stream.mpvSubtitleTrack) {
@@ -340,10 +375,10 @@ class PlaybackController(
 
 	/** Reports the playback state of a single stream to the server. */
 	private inner class ReportingSession(private var stream: ResolvedStream) {
-		private var started = false
-		private var position: Duration = stream.startPosition ?: Duration.ZERO
-		private var duration: Duration? = null
-		private var paused = false
+		@Volatile private var started = false
+		@Volatile private var position: Duration = stream.startPosition ?: Duration.ZERO
+		@Volatile private var duration: Duration? = null
+		@Volatile private var paused = false
 		private var lastReport = TimeSource.Monotonic.markNow()
 
 		fun reset(newStream: ResolvedStream) {

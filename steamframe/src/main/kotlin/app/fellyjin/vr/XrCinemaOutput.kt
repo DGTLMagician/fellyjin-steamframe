@@ -151,16 +151,15 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	/** Curved screen drawn by the app, when the runtime has no cylinder layers (SteamVR on the Steam Frame). */
 	private var screen: ScreenRenderer? = null
-	private var screenWidthPx = 0
-	private var screenHeightPx = 0
+
+	/** The render thread's frame the screen currently samples (no copy). */
+	private var screenFrame: VideoRenderThread.SampledFrame? = null
 
 	/** True once the first video frame is on screen, through either path. */
-	private val hasVideo: Boolean get() = video?.hasContent == true || screen?.hasContent == true
+	private val hasVideo: Boolean get() = video?.hasContent == true || screenFrame != null
 	private var videoThread: VideoRenderThread? = null
 	private var pendingOsd: String? = null
 	private val room = RoomState()
-	private var paused = true
-	private var lastPausePoll = TimeSource.Monotonic.markNow()
 	private var displayHz = 0f
 	private var lastFrameTime = 0L
 
@@ -657,7 +656,14 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	override fun attach(player: MpvPlayer) {
 		// mpv renders on its own thread and shared context, so a slow (4K) frame never stalls the 144 Hz frame loop
-		videoThread = VideoRenderThread(player, window, FLIP_Y, egl = glApi == GlApi.EGL)
+		videoThread = VideoRenderThread(player, window, FLIP_Y, egl = glApi == GlApi.EGL, sampled = screen != null)
+	}
+
+	@Volatile
+	private var pausedOrBuffering = false
+
+	override fun onPausedChanged(paused: Boolean) {
+		pausedOrBuffering = paused
 	}
 
 	override fun onStreamLoaded(player: MpvPlayer, stream: ResolvedStream) {
@@ -679,9 +685,6 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		tuneForResolution(player, videoWidth)
 		screen?.let { screen ->
 			// The video goes into the screen's own mipmapped texture, no video swapchain needed
-			screenWidthPx = width
-			screenHeightPx = height
-			screen.resize(width, height)
 			videoThread?.setTargetSize(width, height)
 			return
 		}
@@ -732,7 +735,7 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 			updateHouseLights(player, displayTime)
 
 			if (videoThread?.hasNewFrame == true) {
-				if (screen != null) copyVideoToScreen() else if (video != null) copyVideo(stack)
+				if (screen != null) sampleNewestFrame() else if (video != null) copyVideo(stack)
 			}
 			pendingOsd?.let {
 				player.command("show-text", it, "4000")
@@ -745,15 +748,10 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 				if (views != null) theater?.let { layers.put(it.render(stack, views, room)) }
 				val screen = screen
 				if (screen != null) {
-					if (screen.hasContent && views != null) {
-						updateRoom(displayAspect(screenWidthPx, screenHeightPx))
-						val rects = eyeRects(screenWidthPx, screenHeightPx).map { r ->
-							floatArrayOf(
-								r.x / screenWidthPx.toFloat(), r.y / screenHeightPx.toFloat(),
-								(r.x + r.width) / screenWidthPx.toFloat(), (r.y + r.height) / screenHeightPx.toFloat(),
-							)
-						}
-						layers.put(screen.render(stack, views, room, curved = settings.curved, eyeRects = rects))
+					val frame = screenFrame
+					if (frame != null && views != null) {
+						updateRoom(displayAspect(frame.width, frame.height))
+						layers.put(screen.render(stack, views, room, curved = settings.curved, eyeRects = screenEyeRects(frame), videoTexture = frame.texture))
 					}
 				} else if (video?.hasContent == true) {
 					addVideoLayers(stack, layers)
@@ -795,10 +793,8 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 
 	/** Dim the house lights while the movie plays and bring them up when paused, like a real theater. */
 	private fun updateHouseLights(player: MpvPlayer, displayTime: Long) {
-		if (lastPausePoll.elapsedNow() >= 100.milliseconds) {
-			lastPausePoll = TimeSource.Monotonic.markNow()
-			paused = player.isPaused || player.getProperty("paused-for-cache") == "yes" || !hasVideo
-		}
+		// The paused state arrives through onPausedChanged (mpv events): no blocking mpv calls on the frame loop
+		val paused = pausedOrBuffering || !hasVideo
 		val dt = if (lastFrameTime == 0L) 0f else ((displayTime - lastFrameTime) / 1e9f).coerceIn(0f, 0.1f)
 		lastFrameTime = displayTime
 		val house = if (paused) 1f else 0f
@@ -960,18 +956,33 @@ class XrCinemaOutput(private val settings: CinemaSettings) : VideoOutput {
 		StereoLayout.TOP_BOTTOM_FULL -> w / (h / 2f)
 	}
 
-	/** Copy the newest frame into the curved screen's texture (and light the theater with it). */
-	private fun copyVideoToScreen() {
-		val screen = screen ?: return
+	/** Switch the screen to the render thread's newest frame (no copy) and light the theater with it. */
+	private fun sampleNewestFrame() {
 		val thread = videoThread ?: return
-		screen.update { fbo, width, height ->
-			thread.copyLatest(fbo, width, height) { source, w, h ->
-				theater?.let {
-					val rect = eyeRects(w, h).first()
-					it.captureScreen(source, rect.x, rect.y, rect.width, rect.height)
-				}
+		thread.acquireLatestForSampling { source, w, h ->
+			theater?.let {
+				val rect = eyeRects(w, h).first()
+				it.captureScreen(source, rect.x, rect.y, rect.width, rect.height)
+			}
+		}?.let { screenFrame = it }
+	}
+
+	/** Normalized per eye texture rects for [frame], cached: they only change with the frame size or 3D layout. */
+	private var cachedRects: List<FloatArray> = emptyList()
+	private var cachedRectsKey = 0L
+
+	private fun screenEyeRects(frame: VideoRenderThread.SampledFrame): List<FloatArray> {
+		val key = (frame.width.toLong() shl 32) or (frame.height.toLong() shl 4) or stereoLayout.ordinal.toLong()
+		if (key != cachedRectsKey) {
+			cachedRectsKey = key
+			cachedRects = eyeRects(frame.width, frame.height).map { r ->
+				floatArrayOf(
+					r.x / frame.width.toFloat(), r.y / frame.height.toFloat(),
+					(r.x + r.width) / frame.width.toFloat(), (r.y + r.height) / frame.height.toFloat(),
+				)
 			}
 		}
+		return cachedRects
 	}
 
 	private fun addVideoLayers(stack: MemoryStack, layers: PointerBuffer) {

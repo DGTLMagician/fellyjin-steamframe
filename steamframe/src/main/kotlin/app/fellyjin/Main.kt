@@ -31,12 +31,26 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import javax.imageio.ImageIO
+import kotlin.system.exitProcess
 
 /** Gamescope (SteamOS gaming mode, including on the Steam Frame) wants a single fullscreen window. */
 private fun runningInGamescope(): Boolean =
 	System.getenv("GAMESCOPE_WAYLAND_DISPLAY") != null ||
 		System.getenv("XDG_CURRENT_DESKTOP").equals("gamescope", ignoreCase = true) ||
 		System.getenv("SteamGamepadUI") != null
+
+/**
+ * Stop playback (reporting the position and ending VR / mpv cleanly) and end the process. Runs on its own thread:
+ * shutting playback down needs the UI thread (it removes the video surface), so waiting for it there would deadlock.
+ * exitProcess makes sure no lingering thread keeps the app alive in gaming mode.
+ */
+private fun quit(playback: PlaybackController) {
+	Thread({
+		LoggerFactory.getLogger("Fellyjin").info("Quitting")
+		playback.shutdown(timeoutMillis = 3_000)
+		exitProcess(0)
+	}, "quit").start()
+}
 
 private val appIcon by lazy {
 	val stream = requireNotNull(object {}.javaClass.getResourceAsStream("/icon.png")) { "icon.png missing" }
@@ -69,7 +83,13 @@ fun main() {
 	val configStore = ConfigStore()
 	val repository = JellyfinRepository(configStore)
 	val playback = PlaybackController(repository, configStore)
-	val deps = AppDependencies(configStore, repository, playback)
+	val deps = AppDependencies(configStore, repository, playback, quit = { quit(playback) })
+
+	// Steam's "Exit game" sends SIGTERM: report the position and end VR cleanly, but never hang on the way out
+	Runtime.getRuntime().addShutdownHook(Thread {
+		Thread({ Thread.sleep(3_000); Runtime.getRuntime().halt(0) }, "exit-watchdog").apply { isDaemon = true }.start()
+		playback.stop()
+	})
 
 	val initialScreen = when {
 		repository.restoreSession() -> Screen.Home
@@ -88,11 +108,7 @@ fun main() {
 		)
 
 		Window(
-			onCloseRequest = {
-				// Let playback report its position and end the VR session / mpv cleanly before the JVM exits
-				playback.shutdown()
-				exitApplication()
-			},
+			onCloseRequest = { quit(playback) },
 			state = windowState,
 			title = BuildInfo.APP_NAME,
 			icon = appIcon,
@@ -157,4 +173,6 @@ fun main() {
 			App(deps, initialScreen, gamepad, keys)
 		}
 	}
+	// The window is gone: don't let any remaining non-daemon thread keep the process alive
+	exitProcess(0)
 }
